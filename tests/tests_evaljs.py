@@ -73,3 +73,25 @@ var greeter = new Greeter("Hello, world!");
 var greeter = new Greeter("Hello, world!");"""
 
         assert expected in ans, report_diff(expected, ans)
+
+
+class TestContext(object):
+    def test_can_construct_context(self):
+        dukpy.Context()
+
+    def test_evaljs(self):
+        c = dukpy.Context()
+        ret = c.evaljs("5")
+        assert ret == 5
+
+    def test_context_retained(self):
+        c = dukpy.Context()
+        c.evaljs("aardvark = 'lemon'")
+        assert c.evaljs("aardvark") == 'lemon'
+
+    def test_handles_none(self):
+        o = dukpy._dukpy.ctx_eval_string
+        dukpy._dukpy.ctx_eval_string = lambda *args, **kwargs: None
+        c = dukpy.Context()
+        c.evaljs("hi")
+        dukpy._dukpy.ctx_eval_string = o
