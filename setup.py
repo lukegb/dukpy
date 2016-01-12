@@ -1,5 +1,8 @@
 import os
-from distutils.core import setup, Extension
+try:
+    from setuptools import setup, Extension
+except ImportError:
+    from distutils.core import setup, Extension
 
 HERE = os.path.abspath(os.path.dirname(__file__))
 try:
@@ -14,14 +17,14 @@ duktape = Extension('dukpy._dukpy',
                     include_dirs=[os.path.join('.', 'duktape')])
 
 setup(
-    name='dukpy',
-    version='0.0.1',
+    name='dukpy-lukegb',
+    version='0.0.2',
     description='Simple JavaScript interpreter for Python',
     long_description=README,
     keywords='javascript compiler babeljs coffeescript',
-    author='Alessandro Molina',
-    author_email='alessandro.molina@axant.it',
-    url='https://github.com/amol-/dukpy',
+    author='Luke Granger-Brown & Alessandro Molina',
+    author_email='python@lukegb.com',
+    url='https://github.com/lukegb/dukpy',
     license='MIT',
     packages=['dukpy'],
     ext_modules=[duktape],

@@ -1,11 +1,11 @@
 dukpy
 =====
 
-.. image:: https://travis-ci.org/amol-/dukpy.png?branch=master 
-    :target: https://travis-ci.org/amol-/dukpy 
+.. image:: https://travis-ci.org/lukegb/dukpy.png?branch=master 
+    :target: https://travis-ci.org/lukegb/dukpy 
 
-.. image:: https://coveralls.io/repos/amol-/dukpy/badge.png?branch=master
-    :target: https://coveralls.io/r/amol-/dukpy?branch=master 
+.. image:: https://coveralls.io/repos/lukegb/dukpy/badge.png?branch=master
+    :target: https://coveralls.io/r/lukegb/dukpy?branch=master 
 
 DukPy is a simple javascript interpreter for Python built on top of
 duktape engine **without any external dependency**.
@@ -15,9 +15,11 @@ It comes with a bunch of common transpilers built-in for convenience:
     - *BabelJS*
     - *TypeScript*
 
-Dukpy has been tested on **Python 2.7** and **Python 3.4**, dukpy
+Dukpy has been tested on **Python 3.4**, dukpy
 is currently not production ready and might actually crash your
 program as it is mostly implemented in C.
+
+dukpy-lukegb is a fork of Alessandro Molina's dukpy: https://github.com/amol-/dukpy
 
 CoffeeScript Compiler
 ---------------------
