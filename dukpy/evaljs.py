@@ -1,10 +1,4 @@
-import json
 from . import _dukpy
-
-try:  # pragma: no cover
-    from collections.abc import Iterable
-except ImportError:  # pragma: no cover
-    from collections import Iterable
 
 try:  # pragma: no cover
     unicode
@@ -16,11 +10,6 @@ except NameError:  # pragma: no cover
 def evaljs(code, **kwargs):
     """Evaluates the given ``code`` as JavaScript and returns the result"""
     return Context().evaljs(code, **kwargs)
-
-
-class JavaScriptCoercion(object):
-    def __init__(self):
-        self.asdf
 
 
 class ContextGlobals(object):
@@ -39,23 +28,24 @@ class ContextGlobals(object):
 
 class Context(object):
     def __init__(self):
-        self._ctx = _dukpy.new_context()
+        self._ctx = _dukpy.new_context(JSFunction)
 
-    def _coerce_to(self, val):
-        return json.dumps(val)
-
-    def define_global_func(self, name, func):
-        _dukpy.add_global_callable(self._ctx, name, func)
-
-    def define_global_obj(self, name, obj):
-        _dukpy.add_global_object(self._ctx, name, obj)
+    def define_global(self, name, obj):
+        _dukpy.ctx_add_global_object(self._ctx, name, obj)
 
     def evaljs(self, code, **kwargs):
         """Evaluates the given ``code`` as JavaScript and returns the result"""
-        jsvars = self._coerce_to(kwargs)
         jscode = code
 
         if not isinstance(code, string_types):
             jscode = ';\n'.join(code)
 
-        return _dukpy.ctx_eval_string(self._ctx, jscode, jsvars)
+        return _dukpy.ctx_eval_string(self._ctx, jscode, kwargs)
+
+
+class JSFunction(object):
+    def __init__(self, func_ptr):
+        self._func = func_ptr
+
+    def __call__(self, *args):
+        return _dukpy.dpf_exec(self._func, args)
