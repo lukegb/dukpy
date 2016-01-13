@@ -178,13 +178,14 @@ static void dukpy_function_destructor(PyObject* pyfunc) {
     duk_del_prop_string(dpf->ctx, -1, dpf->name); // [... gstash]
     duk_get_prop_string(dpf->ctx, -1, "pydukPyCTX"); // [... gstash pyctx]
     PyObject* pyctx = (PyObject*)duk_require_pointer(dpf->ctx, -1); // [... gstash pyctx]
-    Py_XINCREF(pyctx);
     duk_pop(dpf->ctx); // [... gstash]
     duk_pop(dpf->ctx); // [...]
 
     free((void*)dpf->name);
     dpf->name = NULL;
     free((void*)dpf);
+    
+    Py_XDECREF(pyctx);
 }
 
 static PyObject* dukpy_pyobj_from_stack(duk_context *ctx, int pos, PyObject* seen, int hasWrapper, int wrapperPos) {
