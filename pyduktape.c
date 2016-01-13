@@ -8,8 +8,14 @@
 
 #if PY_MAJOR_VERSION >= 3
 #define CONDITIONAL_PY3(three, two) (three)
+#define DUKPY_IS_NSTRING PyUnicode_Check
+#define DUKPY_NSTRING_TO_CHAR PyUnicode_AsUTF8
+#define DUKPY_CHAR_TO_NSTRING PyUnicode_FromString
 #else
 #define CONDITIONAL_PY3(three, two) (two)
+#define DUKPY_IS_NSTRING PyString_Check
+#define DUKPY_NSTRING_TO_CHAR PyString_AsString
+#define DUKPY_CHAR_TO_NSTRING PyString_FromString
 #endif
 
 #ifdef __cplusplus
@@ -19,6 +25,7 @@ extern "C" {
 static PyObject *DukPyError;
 static const char* DUKPY_CONTEXT_CAPSULE_NAME = "dukpy.dukcontext";
 static const char* DUKPY_PTR_CAPSULE_NAME = "dukpy.miscpointer";
+
 
 #define DUKPY_INTERNAL_PROPERTY "\xff\xff"
 
@@ -105,6 +112,37 @@ static PyObject* dukpy_pyobj_from_stack(duk_context *ctx, int pos, PyObject* see
         case DUK_TYPE_NUMBER:
         {
             Py_DECREF(kkey);
+
+            // is this int-y enough for us to try and int cast?
+            duk_push_string(ctx, "(function(n) { return Math.round(n) == n })");
+            duk_peval(ctx);
+            if (pos < 0) {
+                duk_dup(ctx, pos - 1);
+            } else {
+                duk_dup(ctx, pos);
+            }
+            duk_call(ctx, 1);
+            duk_bool_t res = duk_require_boolean(ctx, -1);
+            duk_pop(ctx);
+
+            if (res) {
+                // try the int cast
+                {
+                    duk_int_t val = duk_get_int(ctx, pos);
+                    if (val > DUK_INT_MIN && val < DUK_INT_MAX) {
+                        return PyLong_FromLong(val);
+                    }
+                }
+
+                // try the uint cast?
+                {
+                    duk_uint_t val = duk_get_uint(ctx, pos);
+                    if (val > DUK_UINT_MIN && val < DUK_UINT_MAX) {
+                        return PyLong_FromUnsignedLong(val);
+                    }
+                }
+            }
+
             double val = duk_get_number(ctx, pos);
             return PyFloat_FromDouble(val);
         }
@@ -113,7 +151,7 @@ static PyObject* dukpy_pyobj_from_stack(duk_context *ctx, int pos, PyObject* see
         {
             Py_DECREF(kkey);
             const char* val = duk_get_string(ctx, pos);
-            return PyUnicode_FromString(val);
+            return DUKPY_CHAR_TO_NSTRING(val);
         }
 
         case DUK_TYPE_OBJECT:
@@ -157,7 +195,7 @@ static PyObject* dukpy_pyobj_from_stack(duk_context *ctx, int pos, PyObject* see
             } else {
                 // we should never end up here, but let's be safe
                 Py_DECREF(kkey);
-                return PyUnicode_FromString(duk_safe_to_string(ctx, pos));
+                return DUKPY_CHAR_TO_NSTRING(duk_safe_to_string(ctx, pos));
             }
         }
 
@@ -183,19 +221,17 @@ static PyObject* dukpy_pyobj_from_stack(duk_context *ctx, int pos, PyObject* see
         {
             Py_DECREF(kkey);
             // ???
-            return PyUnicode_FromString(duk_safe_to_string(ctx, pos));                    
+            return DUKPY_CHAR_TO_NSTRING(duk_safe_to_string(ctx, pos));                    
         }
     }
 }
-
-volatile static PyObject* exc_cause = NULL;
 
 static duk_ret_t dukpy_callable_finalizer(duk_context *ctx) {
     duk_get_prop_string(ctx, 0, DUKPY_INTERNAL_PROPERTY "_ptr");
     void* ptr = duk_require_pointer(ctx, -1);
 
     // PyObject* repr = PyObject_Repr(ptr);
-    // printf("Finalizing %p - %s\n", ptr, PyUnicode_AsUTF8(repr));
+    // printf("Finalizing %p - %s\n", ptr, DUKPY_NSTRING_TO_CHAR(repr));
     // Py_XDECREF(repr);
 
     Py_XDECREF((PyObject*)ptr);
@@ -261,8 +297,8 @@ static void dukpy_create_objwrap(duk_context *ctx) {
 }
 
 static int dukpy_wrap_a_python_object_somehow_and_return_it(duk_context *ctx, PyObject* obj) {
-    if (PyUnicode_Check(obj)) {
-        char* val = PyUnicode_AsUTF8(obj);
+    if (DUKPY_IS_NSTRING(obj)) {
+        char* val = DUKPY_NSTRING_TO_CHAR(obj);
         duk_push_string(ctx, val);
     } else if (obj == Py_None) {
         duk_push_null(ctx);
@@ -287,25 +323,93 @@ static int dukpy_wrap_a_python_object_somehow_and_return_it(duk_context *ctx, Py
     return 1;
 }
 
+
 static void* dukpy_get_objwrap_pyobj(duk_context *ctx, int where) {
     duk_get_prop_string(ctx, where, DUKPY_INTERNAL_PROPERTY "_ptr");
     PyObject* v = (PyObject*)duk_require_pointer(ctx, -1);
     duk_pop(ctx);
     return v;
 }
+static duk_ret_t dukpy_objwrap_toString(duk_context *ctx) {
+    duk_push_this(ctx);
+    PyObject* v = dukpy_get_objwrap_pyobj(ctx, -1);
+    duk_pop(ctx);
+    if (v == NULL) {
+        return 0;
+    }
+
+    PyObject* vstr = PyObject_Str(v);
+    if (v == NULL) {
+        vstr = PyObject_Repr(v);
+    }
+    if (v == NULL) {
+        return 0;
+    }
+
+    char* vstrutf8 = DUKPY_NSTRING_TO_CHAR(vstr);
+    duk_push_string(ctx, vstrutf8);
+    return 1;
+}
 static duk_ret_t dukpy_objwrap_get(duk_context *ctx) {
     // arguments: [wrappedObj key recv]
     duk_pop(ctx); // we don't care about recv
 
-    const char* name = duk_require_string(ctx, -1);
-    duk_pop(ctx);
+    PyObject* v = dukpy_get_objwrap_pyobj(ctx, -2);
 
-    PyObject* v = dukpy_get_objwrap_pyobj(ctx, -1);
-    duk_pop(ctx);
+    PyObject* thing = NULL;
 
-    PyObject* thing = PyObject_GetAttrString(v, name);
+    switch (duk_get_type(ctx, -1)) {
+        case DUK_TYPE_STRING:
+        {
+            const char* name = duk_require_string(ctx, -1);
+
+            // is this toString?
+            if (strncmp(name, "toString", 9) == 0) {
+                // shortcircuit, return a callable
+                duk_push_c_function(ctx, dukpy_objwrap_toString, 0);
+                return 1;
+            }
+            if (PySequence_Check(v) && strncmp(name, "length", 7) == 0) {
+                // shortcircuit, return the length
+                int len = PySequence_Size(v);
+                duk_push_int(ctx, len);
+                return 1;
+            }
+
+            if (PyMapping_Check(v)) {
+                thing = PyMapping_GetItemString(v, name);
+            }
+
+            if (thing == NULL) {
+                PyErr_Clear();
+                thing = PyObject_GetAttrString(v, name);
+            }
+
+            if (thing == NULL) {
+                PyErr_Clear();
+                return 0;
+            }
+        }
+        break;
+
+        case DUK_TYPE_NUMBER:
+        {
+            duk_int_t idx = duk_require_int(ctx, -1);
+
+            if (PySequence_Check(v)) {
+                thing = PySequence_GetItem(v, idx);
+            }
+
+            if (thing == NULL) {
+                PyErr_Clear();
+                return 0;
+            }
+        }
+        break;
+    }
+    duk_pop_2(ctx);
+
     if (thing == NULL) {
-        PyErr_Clear();
         return 0;
     }
 
@@ -314,22 +418,172 @@ static duk_ret_t dukpy_objwrap_get(duk_context *ctx) {
 static duk_ret_t dukpy_objwrap_set(duk_context *ctx) {
     // arguments: [wrappedObj key newVal recv]
     PyObject* v = dukpy_get_objwrap_pyobj(ctx, -4);
-    printf("set %p\n", v);
+    duk_pop(ctx); // don't want recv
+
+    PyObject* seen = PyDict_New();
+    PyObject* val = dukpy_pyobj_from_stack(ctx, -1, seen);
+    Py_DECREF(seen);
+    duk_pop(ctx);
+
+    int status = -1;
+
+    switch (duk_get_type(ctx, -1)) {
+        case DUK_TYPE_STRING:
+        {
+            const char* name = duk_require_string(ctx, -1);
+
+            // is this toString?
+            if (strncmp(name, "toString", 9) == 0) {
+                return 0;
+            }
+            if (PySequence_Check(v) && strncmp(name, "length", 7) == 0) {
+                // TODO: make this not a noop and obey ECMAScript array semantics
+                return 0;
+            }
+
+            if (PyMapping_Check(v)) {
+                status = PyMapping_SetItemString(v, name, val);
+            }
+
+            if (status < 0) {
+                PyErr_Clear();
+                status = PyObject_SetAttrString(v, name, val);
+            }
+
+            if (status < 0) {
+                PyErr_Clear();
+                Py_DECREF(val);
+                return 0;
+            }
+        }
+        break;
+
+        case DUK_TYPE_NUMBER:
+        {
+            duk_int_t idx = duk_require_int(ctx, -1);
+
+            if (PySequence_Check(v)) {
+                status = PySequence_SetItem(v, idx, val);
+            }
+
+            if (status < 0) {
+                PyErr_Clear();
+                Py_DECREF(val);
+                return 0;
+            }
+        }
+        break;
+    }
+
+    Py_DECREF(val);
     return 0;
 }
 static duk_ret_t dukpy_objwrap_has(duk_context *ctx) {
     // arguments: [wrappedObj key]
     PyObject* v = dukpy_get_objwrap_pyobj(ctx, -2);
-    printf("has %p\n", v);
-    return 0;
+
+    int result = -1;
+
+    switch (duk_get_type(ctx, -1)) {
+        case DUK_TYPE_STRING:
+        {
+            const char* name = duk_require_string(ctx, -1);
+
+            // is this toString?
+            if (strncmp(name, "toString", 9) == 0) {
+                result = 1;
+            }
+            // How about length?
+            if (result < 1 && PySequence_Check(v) && strncmp(name, "length", 7) == 0) {
+                result = 1;
+            }
+
+            if (result < 1 && PyMapping_Check(v)) {
+                result = PyMapping_HasKeyString(v, name);
+            }
+
+            if (result < 1) {
+                result = PyObject_HasAttrString(v, name);
+            }
+        }
+        break;
+
+        case DUK_TYPE_NUMBER:
+        {
+            duk_int_t idx = duk_require_int(ctx, -1);
+
+            if (idx >= 0 && PySequence_Check(v)) {
+                Py_ssize_t maxlen = PySequence_Size(v);
+                result = maxlen > idx;
+            }
+        }
+        break;
+    }
+    duk_pop_2(ctx);
+
+    if (result < 1) {
+        duk_push_false(ctx);
+    } else {
+        duk_push_true(ctx);
+    }
+    return 1;
 }
 static duk_ret_t dukpy_objwrap_deleteProperty(duk_context *ctx) {
     // arguments: [wrappedObj key]
     PyObject* v = dukpy_get_objwrap_pyobj(ctx, -2);
-    printf("deleteProperty %p\n", v);
+
+    int status = -1;
+
+    switch (duk_get_type(ctx, -1)) {
+        case DUK_TYPE_STRING:
+        {
+            const char* name = duk_require_string(ctx, -1);
+
+            // is this toString?
+            if (strncmp(name, "toString", 9) == 0) {
+                return 0;
+            }
+            if (PySequence_Check(v) && strncmp(name, "length", 7) == 0) {
+                // TODO: make this not a noop and obey ECMAScript array semantics
+                return 0;
+            }
+
+            if (PyMapping_Check(v)) {
+                status = PyMapping_DelItemString(v, name);
+            }
+
+            if (status < 0) {
+                PyErr_Clear();
+                status = PyObject_DelAttrString(v, name);
+            }
+
+            if (status < 0) {
+                PyErr_Clear();
+                return 0;
+            }
+        }
+        break;
+
+        case DUK_TYPE_NUMBER:
+        {
+            duk_int_t idx = duk_require_int(ctx, -1);
+
+            if (PySequence_Check(v)) {
+                status = PySequence_DelItem(v, idx);
+            }
+
+            if (status < 0) {
+                PyErr_Clear();
+                return 0;
+            }
+        }
+        break;
+    }
+    duk_pop_2(ctx);
+
     return 0;
 }
-static duk_ret_t dukpy_objwrap_enumerate(duk_context *ctx) {
+static duk_ret_t dukpy_objwrap_enumerate_core(duk_context *ctx, int allowDir) {
     // arguments: [wrappedObj]
     PyObject* v = dukpy_get_objwrap_pyobj(ctx, -1);
     duk_pop(ctx);
@@ -339,6 +593,7 @@ static duk_ret_t dukpy_objwrap_enumerate(duk_context *ctx) {
     int itemPos = 0;
     int usePositionAsKey = 0;
     int maskDunder = 0;
+    int mustCoerceToString = 0;
 
     duk_push_array(ctx);
 
@@ -350,19 +605,18 @@ static duk_ret_t dukpy_objwrap_enumerate(duk_context *ctx) {
         }
     }
 
-    if (itr == NULL && (PySequence_Check(v) || PyUnicode_Check(v))) {
+    if (itr == NULL && (PySequence_Check(v) || DUKPY_IS_NSTRING(v))) {
         // If we're a sequence, we return the ints
         itr = PySequence_List(v);
         
         if (itr == NULL) {
-            printf("boo\n");
             PyErr_Clear();
         } else {
             usePositionAsKey = 1;
         }
     }
 
-    if (itr == NULL) {
+    if (itr == NULL && allowDir) {
         // Otherwise, use dir
         itr = PyObject_Dir(v);
         
@@ -371,6 +625,13 @@ static duk_ret_t dukpy_objwrap_enumerate(duk_context *ctx) {
         } else {
             maskDunder = 1;
         }
+    }
+
+    if (itr == NULL && !allowDir) {
+        // We can try using the object as an iterator
+        Py_INCREF(v);
+        itr = v;
+        mustCoerceToString = 1;
     }
 
     if (itr == NULL) {
@@ -383,20 +644,29 @@ static duk_ret_t dukpy_objwrap_enumerate(duk_context *ctx) {
         return 1;
     }
 
+    duk_push_number(ctx, 2);
+    duk_put_prop_index(ctx, -2, 0);
+
     while ((item = PyIter_Next(realIter)) != NULL) {
         if (usePositionAsKey) {
             duk_push_number(ctx, itemPos);
             duk_put_prop_index(ctx, -2, itemPos);
         } else {
-            if (PyNumber_Check(item)) {
-                double val = PyFloat_AsDouble(item);
+            if (mustCoerceToString) {
+                PyObject* nitem = PyObject_Str(item);
+                Py_DECREF(item);
+                item = nitem;
+            }
+
+            if (!mustCoerceToString && PyNumber_Check(item)) {
+                long val = PyLong_AsLong(item);
                 if (!PyErr_Occurred()) {
-                    duk_push_number(ctx, val);
+                    duk_push_int(ctx, val);
                 } else {
                     duk_push_undefined(ctx);
                 }
-            } else if (PyUnicode_Check(item)) {
-                char* val = PyUnicode_AsUTF8(item);
+            } else if (DUKPY_IS_NSTRING(item)) {
+                char* val = DUKPY_NSTRING_TO_CHAR(item);
                 if (maskDunder && val[0] == '_' && val[1] == '_') {
                     Py_DECREF(item);
                     continue;
@@ -418,8 +688,11 @@ static duk_ret_t dukpy_objwrap_enumerate(duk_context *ctx) {
     Py_DECREF(realIter);
     return 1;
 }
+static duk_ret_t dukpy_objwrap_enumerate(duk_context *ctx) {
+    return dukpy_objwrap_enumerate_core(ctx, 0);
+}
 static duk_ret_t dukpy_objwrap_ownKeys(duk_context *ctx) {
-    return dukpy_objwrap_enumerate(ctx);
+    return dukpy_objwrap_enumerate_core(ctx, 1);
 }
 
 
@@ -504,8 +777,8 @@ static PyObject *DukPy_eval_string_ctx(PyObject *self, PyObject *args) {
 
     PyObject* seen = PyDict_New();
     PyObject* ret = dukpy_pyobj_from_stack(ctx, -1, seen);
-    duk_pop(ctx);
     Py_DECREF(seen);
+    duk_pop(ctx);
 
     return ret;
 }
