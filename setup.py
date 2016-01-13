@@ -19,7 +19,7 @@ duktape = Extension('dukpy._dukpy',
 
 setup(
     name='dukpy-lukegb',
-    version='0.0.2',
+    version='0.1.0',
     description='Simple JavaScript interpreter for Python',
     long_description=README,
     keywords='javascript compiler babeljs coffeescript',
