@@ -44,14 +44,11 @@ class Context(object):
     def _coerce_to(self, val):
         return json.dumps(val)
 
-    def _coerce_from(self, res):
-        if res is None:
-            return None
-
-        return json.loads(res.decode('utf-8'))
-
     def define_global_func(self, name, func):
         _dukpy.add_global_callable(self._ctx, name, func)
+
+    def define_global_obj(self, name, obj):
+        _dukpy.add_global_object(self._ctx, name, obj)
 
     def evaljs(self, code, **kwargs):
         """Evaluates the given ``code`` as JavaScript and returns the result"""
@@ -61,4 +58,4 @@ class Context(object):
         if not isinstance(code, string_types):
             jscode = ';\n'.join(code)
 
-        return self._coerce_from(_dukpy.ctx_eval_string(self._ctx, jscode, jsvars))
+        return _dukpy.ctx_eval_string(self._ctx, jscode, jsvars)
