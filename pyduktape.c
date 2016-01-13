@@ -187,7 +187,7 @@ static void dukpy_function_destructor(PyObject* pyfunc) {
     free((void*)dpf);
 }
 
-static PyObject* dukpy_pyobj_from_stack(duk_context *ctx, int pos, PyObject* seen) {
+static PyObject* dukpy_pyobj_from_stack(duk_context *ctx, int pos, PyObject* seen, int hasWrapper, int wrapperPos) {
     duk_dup(ctx, pos);
     void* kptr = duk_to_pointer(ctx, -1);
     duk_pop(ctx);
@@ -271,6 +271,20 @@ static PyObject* dukpy_pyobj_from_stack(duk_context *ctx, int pos, PyObject* see
                 duk_push_global_stash(ctx); // [... func gstash]
                 struct DukPyFunction* dpf = dukpy_generate_function(ctx);
                 duk_dup(ctx, -2); // [... func gstash func]
+
+                // we need to bind this function if it's not already bound
+                if (hasWrapper && !duk_is_bound_function(ctx, -1)) {
+                    // bind it!
+                    int newWrapperPos = wrapperPos;
+                    if (newWrapperPos < 0) {
+                        newWrapperPos -= 4;
+                    }
+                    duk_push_string(ctx, "bind"); // [... func gstash func "bind"]
+                    duk_dup(ctx, newWrapperPos); // [...func gstash func "bind" this]
+                    duk_call_prop(ctx, -3, 1); //[...func gstash func funcTHIS]
+                    duk_remove(ctx, -2); // [...func gstash funcTHIS]
+                }
+
                 duk_put_prop_string(ctx, -2, dpf->name); // [... func gstash]
                 duk_pop_2(ctx); // [...]
 
@@ -294,9 +308,16 @@ static PyObject* dukpy_pyobj_from_stack(duk_context *ctx, int pos, PyObject* see
                 int len = duk_get_length(ctx, pos);
                 PyObject* val = PyList_New(len);
                 PyDict_SetItem(seen, kkey, val);
+
+                int myPosInside = pos;
+                if (pos < 0) {
+                    // account for the actual python object itself
+                    myPosInside -= 1;
+                }
+
                 for (int i = 0; i < len; i++) {
                     duk_get_prop_index(ctx, pos, i);
-                    PyList_SET_ITEM(val, i, dukpy_pyobj_from_stack(ctx, -1, seen));
+                    PyList_SET_ITEM(val, i, dukpy_pyobj_from_stack(ctx, -1, seen, 1, myPosInside));
                     duk_pop(ctx);
                 }
                 Py_DECREF(kkey);
@@ -312,12 +333,18 @@ static PyObject* dukpy_pyobj_from_stack(duk_context *ctx, int pos, PyObject* see
                     return val;
                 }
 
+                int myPosInside = pos;
+                if (pos < 0) {
+                    // account for the enumerator, key and values
+                    myPosInside -= 3;
+                }
+
                 PyObject* val = PyDict_New();
                 PyDict_SetItem(seen, kkey, val);
                 duk_enum(ctx, pos, DUK_ENUM_OWN_PROPERTIES_ONLY);
                 while (duk_next(ctx, -1, 1)) {
-                    PyObject* ikey = dukpy_pyobj_from_stack(ctx, -2, seen);
-                    PyObject* ival = dukpy_pyobj_from_stack(ctx, -1, seen);
+                    PyObject* ikey = dukpy_pyobj_from_stack(ctx, -2, seen, 1, myPosInside);
+                    PyObject* ival = dukpy_pyobj_from_stack(ctx, -1, seen, 1, myPosInside);
                     PyDict_SetItem(val, ikey, ival);
                     Py_DECREF(ikey);
                     Py_DECREF(ival);
@@ -385,7 +412,7 @@ static duk_ret_t dukpy_callable_handler(duk_context *ctx) {
     PyObject* argTuple = PyTuple_New(nargs);
     PyObject* seen = PyDict_New();
     for (int i = nargs - 1; i >= 0; i--) {
-        PyObject* argObj = dukpy_pyobj_from_stack(ctx, -1, seen);
+        PyObject* argObj = dukpy_pyobj_from_stack(ctx, -1, seen, 0, 0);
         duk_pop(ctx);
         PyTuple_SET_ITEM(argTuple, i, argObj);
     }
@@ -580,7 +607,7 @@ static duk_ret_t dukpy_objwrap_set(duk_context *ctx) {
     duk_pop(ctx); // don't want recv
 
     PyObject* seen = PyDict_New();
-    PyObject* val = dukpy_pyobj_from_stack(ctx, -1, seen);
+    PyObject* val = dukpy_pyobj_from_stack(ctx, -1, seen, 0, 0);
     Py_DECREF(seen);
     duk_pop(ctx);
 
@@ -951,7 +978,7 @@ static PyObject *DukPy_eval_string_ctx(PyObject *self, PyObject *args) {
     }
 
     PyObject* seen = PyDict_New();
-    PyObject* ret = dukpy_pyobj_from_stack(ctx, -1, seen);
+    PyObject* ret = dukpy_pyobj_from_stack(ctx, -1, seen, 0, 0);
     Py_DECREF(seen);
     duk_pop(ctx);
 
@@ -1027,7 +1054,7 @@ static PyObject *DukPy_exec_dpf(PyObject *self, PyObject *args) {
 
     duk_pcall(dpf->ctx, argCount); // [... gstash res <args>]
     PyObject* seen = PyDict_New();
-    PyObject* ret = dukpy_pyobj_from_stack(dpf->ctx, -1, seen);
+    PyObject* ret = dukpy_pyobj_from_stack(dpf->ctx, -1, seen, 0, 0);
     Py_DECREF(seen);
     duk_pop_2(dpf->ctx); // [...]
 
