@@ -12,20 +12,6 @@ def evaljs(code, **kwargs):
     return Context().evaljs(code, **kwargs)
 
 
-class ContextGlobals(object):
-    def __init__(self, ctx):
-        self._ctx = ctx
-
-    def __getitem__(self, key):
-        return self._ctx.global_get(key)
-
-    def __setitem__(self, key, val):
-        return self._ctx.global_set(key, val)
-
-    def __delitem__(self, key):
-        self._ctx.global_del(key)
-
-
 class Context(object):
     def __init__(self):
         self._ctx = _dukpy.new_context(JSFunction)
