@@ -13,5 +13,5 @@ class BabelJS(Filter):
     max_debug_level = None
 
     def input(self, _in, out, **kw):
-        src = dukpy.babel_compile(_in.read())
-        out.write(src)
+        src = dukpy.babel_compile(_in.read().encode('utf-8'))
+        out.write(src.decode('utf-8'))
