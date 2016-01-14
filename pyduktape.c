@@ -19,6 +19,15 @@
 #define DUKPY_CHAR_TO_NSTRING PyString_FromString
 #endif
 
+
+#ifdef DUKPY_DEBUG
+#define DUKPY_DEBUG_PRINT printf
+#define DUKPY_DEBUG_PRINT_REPR(thing) { do { PyObject* tptr = (thing); PyObject* repr = PyObject_Repr(tptr); printf("obj at %p: repr: %s\n", tptr, DUKPY_NSTRING_TO_CHAR(repr)); Py_DECREF(repr); } while (0); }
+#else
+#define DUKPY_DEBUG_PRINT(x, v...) // 
+#define DUKPY_DEBUG_PRINT_REPR(thing) // 
+#endif
+
 #ifdef __cplusplus
 extern "C" {
 #endif
@@ -137,11 +146,14 @@ static duk_context* dukpy_ensure_valid_ctx(PyObject* pyctx) {
 }
 
 static void dukpy_destroy_pyctx(PyObject* pyctx) {
+    DUKPY_DEBUG_PRINT("destroying pyctx\n");
     duk_context *ctx = dukpy_ensure_valid_ctx(pyctx);
 
     if (!ctx) {
         return;
     }
+
+    DUKPY_DEBUG_PRINT("OK, destroying PyJSFunction...\n");
 
     duk_push_global_stash(ctx); // [... gstash]
     duk_get_prop_string(ctx, -1, "pydukPyJSFunction"); // [... gstash ptr]
@@ -150,9 +162,15 @@ static void dukpy_destroy_pyctx(PyObject* pyctx) {
     duk_pop_2(ctx); // [...]
     Py_XDECREF(pyJSFunction);
 
+    DUKPY_DEBUG_PRINT("OK, destroying heap!\n");
+
     duk_destroy_heap(ctx);
+
+    DUKPY_DEBUG_PRINT("We're outta here.");
 }
 static void dukpy_function_destructor(PyObject* pyfunc) {
+    DUKPY_DEBUG_PRINT("destructing function here!\n");
+
     if (!PyCapsule_CheckExact(pyfunc)) {
         return;
     }
@@ -174,6 +192,8 @@ static void dukpy_function_destructor(PyObject* pyfunc) {
         return;
     }
 
+    DUKPY_DEBUG_PRINT("destructing function\n");
+
     duk_push_global_stash(dpf->ctx); // [... gstash]
     duk_del_prop_string(dpf->ctx, -1, dpf->name); // [... gstash]
     duk_get_prop_string(dpf->ctx, -1, "pydukPyCTX"); // [... gstash pyctx]
@@ -184,7 +204,7 @@ static void dukpy_function_destructor(PyObject* pyfunc) {
     free((void*)dpf->name);
     dpf->name = NULL;
     free((void*)dpf);
-    
+
     Py_XDECREF(pyctx);
 }
 
@@ -392,12 +412,13 @@ static duk_ret_t dukpy_callable_finalizer(duk_context *ctx) {
     duk_get_prop_string(ctx, 0, DUKPY_INTERNAL_PROPERTY "_ptr");
     void* ptr = duk_require_pointer(ctx, -1);
 
-    // PyObject* repr = PyObject_Repr(ptr);
-    // printf("Finalizing %p - %s\n", ptr, DUKPY_NSTRING_TO_CHAR(repr));
-    // Py_XDECREF(repr);
+    DUKPY_DEBUG_PRINT("Finalizing %p:\n", ptr);
+    DUKPY_DEBUG_PRINT_REPR(ptr);
 
     Py_XDECREF((PyObject*)ptr);
     duk_pop_2(ctx);
+
+    DUKPY_DEBUG_PRINT("Finalizer on %p done.\n", ptr);
     return 0;
 }
 static duk_ret_t dukpy_callable_handler(duk_context *ctx) { 
@@ -436,6 +457,12 @@ static duk_ret_t dukpy_callable_handler(duk_context *ctx) {
 static void dukpy_create_pyptrobj(duk_context *ctx, PyObject* obj) {
     duk_push_pointer(ctx, obj); // [obj objptr]
     duk_put_prop_string(ctx, -2, DUKPY_INTERNAL_PROPERTY "_ptr"); // [obj]
+
+
+    DUKPY_DEBUG_PRINT("generating wrapper for %p\n", obj);
+    DUKPY_DEBUG_PRINT_REPR(obj);
+
+
     duk_push_c_function(ctx, dukpy_callable_finalizer, 1); // [obj finalizer]
     duk_set_finalizer(ctx, -2); // [obj]
 }
@@ -934,12 +961,14 @@ static PyObject *DukPy_create_context(PyObject *self, PyObject *args) {
     duk_put_prop_string(ctx, -2, "pydukObjWrapper"); // [gstash]
 
     PyObject* pyctx = PyCapsule_New(ctx, DUKPY_CONTEXT_CAPSULE_NAME, &dukpy_destroy_pyctx);
+    DUKPY_DEBUG_PRINT("pyctx is at %p, ctx is at %p\n", pyctx, ctx);
     duk_push_pointer(ctx, pyctx); // [gstash pyctx]
     duk_put_prop_string(ctx, -2, "pydukPyCTX"); // [gstash]
 
     Py_INCREF(pyJSFunction);
     duk_push_pointer(ctx, pyJSFunction); // [gstash pyJSFunction]
     duk_put_prop_string(ctx, -2, "pydukPyJSFunction"); // [gstash]
+    DUKPY_DEBUG_PRINT("pyJSFunction is at %p\n", pyJSFunction);
 
     duk_pop(ctx); // []
 
