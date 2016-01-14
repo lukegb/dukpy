@@ -214,3 +214,18 @@ class TestPythonToJSObject(object):
 
         ret = call_first_argument_js(call_first_argument_python, sum, [1, 7, 10])
         assert ret == 18
+
+
+class TestRegressions(object):
+    def test_pyargs_segfault(self):
+        for _ in range(1, 10):
+            c = dukpy.Context()
+            c.define_global("test", range(1000))
+            c.evaljs("""
+var iter = test.__iter__();
+var i = (iter.__next__ || iter.next)();
+while (i !== null) {
+    i = (iter.__next__ || iter.next)();
+    break;
+}
+            """)
