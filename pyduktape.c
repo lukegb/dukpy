@@ -991,6 +991,8 @@ static PyObject *DukPy_eval_string_ctx(PyObject *self, PyObject *args) {
 
     duk_gc(ctx, 0);
 
+    // set global 'dukpy' to be our input
+    Py_INCREF(pyvars);
     if (dukpy_wrap_a_python_object_somehow_and_return_it(ctx, pyvars) != 1) {
         if (!PyErr_Occurred()) {
             PyErr_SetString(DukPyError, "something went wrong");
@@ -1011,6 +1013,10 @@ static PyObject *DukPy_eval_string_ctx(PyObject *self, PyObject *args) {
     PyObject* ret = dukpy_pyobj_from_stack(ctx, -1, seen, 0, 0);
     Py_DECREF(seen);
     duk_pop(ctx);
+
+    // clean up 'dukpy' global
+    duk_push_global_object(ctx);
+    duk_del_prop_string(ctx, -1, "dukpy");
 
     return ret;
 }
