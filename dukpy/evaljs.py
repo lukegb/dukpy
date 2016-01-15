@@ -75,6 +75,7 @@ class RequirableContextFinder(object):
                 last_found_path = ret
                 next_search_paths.insert(0, os.path.dirname(last_found_path))
                 next_search_paths.insert(1, os.path.join(os.path.dirname(last_found_path), 'node_modules'))
+                next_search_paths.insert(1, os.path.join(os.path.dirname(os.path.dirname(last_found_path)), 'node_modules'))
                 break
             else:
                 raise ImportError("unable to find " + id_)

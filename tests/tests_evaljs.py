@@ -3,6 +3,8 @@ import os.path
 import dukpy
 from diffreport import report_diff
 
+from nose.plugins.skip import SkipTest
+
 
 class TestEvalJS(object):
     def test_object_return(self):
@@ -276,3 +278,37 @@ while (i !== null) {
     break;
 }
             """)
+
+
+class TestNPM(object):
+    @classmethod
+    def setup_class(cls):
+        cls.node_packages = os.path.join(os.path.dirname(os.path.dirname(__file__)), 'node_modules')
+        if not os.path.exists(cls.node_packages):
+            raise SkipTest('{} does not exist'.format(cls.node_packages))
+
+    def test_react_works(self):
+        ctx = dukpy.RequirableContext([self.node_packages])
+        ret = ctx.evaljs("""
+var React = require('react'),
+    ReactDOM = require('react-dom/server');
+
+var HelloWorld = React.createClass({
+  render: function() {
+    return React.createElement('p', null, 'Hi!');
+  }
+});
+
+({
+  React: React,
+  ReactDOM: ReactDOM,
+  HelloWorld: HelloWorld
+})
+""")
+
+        React = ret.React
+        ReactDOM = ret.ReactDOM
+        HelloWorld = ret.HelloWorld
+
+        markup = ReactDOM.renderToStaticMarkup(React.createElement(HelloWorld, None, ''))
+        assert markup == "<p>Hi!</p>"
