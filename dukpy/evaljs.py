@@ -89,9 +89,9 @@ class RequirableContextFinder(object):
     def resolve(self, req_ctx, id_, search_paths):
         # we need to resolve id_ left-to-right
         search_paths = list(search_paths)
-        if id_[0] == '!':
+        if id_[0] == '!' and id_[-1] == '!':
             start_path = str(req_ctx.evaljs("Duktape.resolverBase"))
-            search_id = id_[1:]
+            search_id = id_[1:-1]
         else:
             start_path = None
             search_id = id_
@@ -111,7 +111,7 @@ class RequirableContextFinder(object):
             raise ImportError("unable to find " + id_)
 
         with open(found_path, 'r') as f:
-            return f.read(), os.path.dirname(found_path)
+            return f.read(), found_path
 
     def require(self, req_ctx, id_, require, exports, module):
         # does the module ID begin with 'python/'
@@ -124,8 +124,8 @@ class RequirableContextFinder(object):
         r = self.resolve(req_ctx, id_, self.search_paths)
         if r:
             ret, located_path = r
-            if id_ and located_path.endswith('.json'):
-                return "module.exports = " + ret + ";"
+            if located_path.endswith('.json'):
+                return "module.exports = (" + ret + ");"
 
             # do a slight cheat here
             # basically we want to make sure that the names
@@ -133,12 +133,12 @@ class RequirableContextFinder(object):
             # require.id to our "canonicalized" name
             #
             # we also need to make sure that <blah>/ requires are accepted
-            req_ctx.define_global("_dukpy_last_module", located_path)
+            req_ctx.define_global("_dukpy_last_module", os.path.dirname(located_path))
             ret = """
 require = (function(_require, locatedPath) {
     return function(mToLoad) {
         Duktape.resolverBase = locatedPath;
-        return _require('!' + mToLoad);
+        return _require('!' + mToLoad + '!');
     };
 })(require, _dukpy_last_module);
 delete _dukpy_last_module;
