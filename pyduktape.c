@@ -304,15 +304,13 @@ static PyObject* dukpy_pyobj_from_stack(duk_context *ctx, int pos, PyObject* see
 
             // we need to bind this function if it's not already bound
             if (duk_is_function(ctx, -1) && hasWrapper && !duk_is_bound_function(ctx, -1)) {
-                // bind it!
+                // but not here...
                 int newWrapperPos = wrapperPos;
                 if (newWrapperPos < 0) {
-                    newWrapperPos -= 4;
+                    newWrapperPos -= 3;
                 }
-                duk_push_string(ctx, "bind"); // [... func gstash func "bind"]
-                duk_dup(ctx, newWrapperPos); // [...func gstash func "bind" this]
-                duk_call_prop(ctx, -3, 1); //[...func gstash func funcTHIS]
-                duk_remove(ctx, -2); // [...func gstash funcTHIS]
+                duk_dup(ctx, newWrapperPos); // [... func gstash func wrapper]
+                duk_put_prop_string(ctx, -2, DUKPY_INTERNAL_PROPERTY "_this");
             }
 
             duk_put_prop_string(ctx, -2, dpf->name); // [... func gstash]
@@ -564,6 +562,60 @@ static void dukpy_create_objwrap(duk_context *ctx) {
     duk_remove(ctx, -2); // [proxy]
 }
 
+static duk_bool_t dukpy_jswrapped_check(duk_context *ctx, PyObject* obj) {
+    duk_push_global_stash(ctx); // [...gstash]
+    duk_get_prop_string(ctx, -1, "pydukpyJSObject"); // [...gstash pyJSObject]
+    PyObject* pyJSObject = duk_require_pointer(ctx, -1); // [... gstash pyJSObject]
+    if (!pyJSObject) {
+        abort();
+    }
+    duk_pop_2(ctx);
+
+    // check isinstance pyJSObject
+    return PyObject_IsInstance(obj, pyJSObject) == 1;
+}
+
+static int dukpy_jswrapped_unwrap(duk_context *ctx, PyObject* obj) {
+    duk_push_global_stash(ctx); // [...gstash]
+    duk_get_prop_string(ctx, -1, "pydukpyJSObject"); // [...gstash pyJSObject]
+    PyObject* pyJSObject = duk_require_pointer(ctx, -1); // [... gstash pyJSObject]
+    if (!pyJSObject) {
+        abort();
+    }
+    duk_pop_2(ctx); // [...]
+
+    if (!PyObject_IsInstance(obj, pyJSObject)) {
+        DUKPY_DEBUG_PRINT("jswrapped_unwrap: no, that's not a JSObject, try again\n");
+        return 0;
+    }
+
+    PyObject* caps = PyObject_GetAttrString(obj, "_ptr");
+    if (!caps) {
+        DUKPY_DEBUG_PRINT("jswrapped_unwrap: no _ptr\n");
+        return 0;
+    }
+
+    struct DukPyFunction* dpf = (struct DukPyFunction*)PyCapsule_GetPointer(caps, DUKPY_FUNCTION_CAPSULE_NAME);
+    if (!dpf) {
+        DUKPY_DEBUG_PRINT("jswrapped_unwrap: dpf not returned!\n");
+        Py_DECREF(caps);
+        return 0;
+    }
+
+    if (dpf->ctx != ctx) {
+        DUKPY_DEBUG_PRINT("jswrapped_unwrap: context mismatch, what are you trying to pull!\n");
+        Py_DECREF(caps);
+        return 0;
+    }
+
+    duk_push_global_stash(ctx); // [... gstash]
+    duk_get_prop_string(ctx, -1, dpf->name); // [... gstash func]
+    duk_remove(ctx, -2); // [... func]
+
+    Py_DECREF(caps);
+    return 1;
+}
+
 static int dukpy_wrap_a_python_object_somehow_and_return_it(duk_context *ctx, PyObject* obj) {
     if (DUKPY_IS_NSTRING(obj)) {
         char* val = DUKPY_NSTRING_TO_CHAR(obj);
@@ -579,6 +631,8 @@ static int dukpy_wrap_a_python_object_somehow_and_return_it(duk_context *ctx, Py
     } else if (PyNumber_Check(obj)) {
         double val = PyFloat_AsDouble(obj);
         duk_push_number(ctx, val);
+    } else if (dukpy_jswrapped_unwrap(ctx, obj) == 1) {
+        return 1;
     } else if (PyCallable_Check(obj)) {
         dukpy_generate_callable_func(ctx, obj);
     } else {
@@ -1160,10 +1214,11 @@ static PyObject *DukPy_exec_dpf(PyObject *self, PyObject *args) {
 
     duk_push_global_stash(dpf->ctx); // [... gstash]
     duk_get_prop_string(dpf->ctx, -1, dpf->name); // [... gstash func]
+    duk_get_prop_string(dpf->ctx, -1, DUKPY_INTERNAL_PROPERTY "_this"); // [... gstash func this]
 
     int argCount = dukpy_push_a_python_sequence_somehow_and_return_the_count(dpf->ctx, pyarglist);
 
-    int result = duk_pcall(dpf->ctx, argCount); // [... gstash res <args>]
+    int result = duk_pcall_method(dpf->ctx, argCount); // [... gstash res <args>]
     if (result) {
         dukpy_set_python_error_from_js_error(dpf->ctx);
         return NULL;
@@ -1209,7 +1264,7 @@ static PyObject *DukPy_get_item_dpf(PyObject *self, PyObject *args) {
     duk_get_prop_string(dpf->ctx, -1, DUKPY_NSTRING_TO_CHAR(pykey)); // [... gstash func prop]
 
     PyObject* seen = PyDict_New();
-    PyObject* ret = dukpy_pyobj_from_stack(dpf->ctx, -1, seen, 0, 0);
+    PyObject* ret = dukpy_pyobj_from_stack(dpf->ctx, -1, seen, 1, -2);
     Py_DECREF(seen);
     duk_pop_3(dpf->ctx); // [...]
 

@@ -226,6 +226,12 @@ class TestPythonToJSObject(object):
         except TypeError:
             pass
 
+    def test_binds_correctly(self):
+        c = dukpy.Context()
+
+        ret = c.evaljs("var r = ({x: 'ham', y: function() { return this.x; }}); r.z = r.y(); r;")
+        assert ret.y() == ret.z
+
 
 class TestRequirableContext(object):
     test_js_dir = os.path.join(os.path.dirname(__file__), 'testjs')

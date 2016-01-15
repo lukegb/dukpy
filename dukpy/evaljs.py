@@ -1,6 +1,7 @@
 from . import _dukpy
 
 import os.path
+import json
 import importlib
 
 try:  # pragma: no cover
@@ -38,9 +39,51 @@ class RequirableContextFinder(object):
         self.enable_python = enable_python
 
     def contribute(self, req_ctx):
-        req_ctx.evaljs("Duktape.modSearch = dukpy.modSearch;", modSearch=self.require)
+        import os
+        req_ctx.evaljs("Duktape.modSearch = dukpy.modSearch;", modSearch=req_ctx.wrap(self.require))
+        req_ctx.evaljs("process = {}; process.env = dukpy.environ", environ=dict(os.environ))
 
-    def require(self, id_, require, exports, module):
+    def try_package_dir(self, folder_package):
+        # grab package.json
+        packagejson_path = os.path.join(folder_package, 'package.json')
+        with open(packagejson_path) as f:
+            packagejson = json.load(f)
+
+        main_thing = packagejson.get('main')
+        return os.path.join(folder_package, main_thing)
+
+    def try_dir(self, path, id_):
+        if os.path.exists(os.path.join(path, id_)):
+            folder_package = os.path.join(path, id_)
+            return self.try_package_dir(folder_package)
+
+        if os.path.exists(os.path.join(path, id_ + '.js')):
+            return os.path.join(path, id_ + '.js')
+
+    def resolve(self, id_, search_paths):
+        # we need to resolve id_ left-to-right
+        search_paths = list(search_paths)
+        id_segments = id_.split('!')
+        last_found_path = None
+
+        for id_segment in id_segments:
+            next_search_paths = list(search_paths)
+            for search_path in search_paths:
+                ret = self.try_dir(search_path, id_segment)
+                if not ret:
+                    continue
+                last_found_path = ret
+                next_search_paths.insert(0, os.path.dirname(last_found_path))
+                next_search_paths.insert(1, os.path.join(os.path.dirname(last_found_path), 'node_modules'))
+                break
+            else:
+                raise ImportError("unable to find " + id_)
+            search_paths = next_search_paths
+
+        with open(last_found_path, 'r') as f:
+            return f.read()
+
+    def require(self, req_ctx, id_, require, exports, module):
         # does the module ID begin with 'python/'
         if self.enable_python and id_.startswith('python/'):
             pyid = id_[len('python/'):].replace('/', '.')
@@ -48,15 +91,43 @@ class RequirableContextFinder(object):
             if ret:
                 return ret
 
-        for search_path in self.search_paths:
-            # we'll assume here that search_path is relative to cwd
-            # or is an absolute path(!)
-            try:
-                with open(os.path.join(search_path, id_ + '.js')) as f:
-                    return f.read()
-            except IOError:
-                # assume this was probably No such file
-                continue
+        ret = self.resolve(id_, self.search_paths)
+        if ret:
+            # do a slight cheat here
+            ret = """
+require = (function(_require) {
+    return function(mToLoad) {
+        var shouldPrependModuleID = false;
+
+        var moduleSnippets = module.id.split('!');
+        var lastModuleSnippet = moduleSnippets[moduleSnippets.length-1];
+
+        if (lastModuleSnippet.indexOf('./') === 0) {
+            // it's relative
+            // in which case, we should only prepend if there's more than one /
+            shouldPrependModuleID = lastModuleSnippet.lastIndexOf('/') !== 1;
+        } else {
+            // it's absolute
+            shouldPrependModuleID = true;
+        }
+
+        var realModuleID = moduleSnippets.pop();
+
+        if (shouldPrependModuleID) {
+            mToLoad = module.id + '!' + mToLoad;
+        } else {
+            mToLoad = moduleSnippets.join('!') + '!' + mToLoad;
+        }
+
+        return _require(mToLoad);
+    };
+})(require);
+
+//process = {'env': {'NODE_ENV': 'production'}};
+(function() {
+""" + ret + "})();"
+
+            return ret
 
         raise ImportError("Unable to load {}".format(id_))
 
@@ -77,6 +148,11 @@ class RequirableContext(Context):
         super(RequirableContext, self).__init__()
         self.finder = RequirableContextFinder(search_paths, enable_python)
         self.finder.contribute(self)
+
+    def wrap(self, callable):
+        def inner(*args, **kwargs):
+            return callable(self, *args, **kwargs)
+        return inner
 
 
 class JSObject(object):
@@ -111,4 +187,7 @@ class JSObject(object):
         return self.length
 
     def __str__(self):
-        return self.toString()
+        try:
+            return self.toString()
+        except:
+            return super(JSObject, self).__str__()
