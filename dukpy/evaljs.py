@@ -17,7 +17,7 @@ def evaljs(code, **kwargs):
 
 class Context(object):
     def __init__(self):
-        self._ctx = _dukpy.new_context(JSFunction)
+        self._ctx = _dukpy.new_context(JSObject)
 
     def define_global(self, name, obj):
         _dukpy.ctx_add_global_object(self._ctx, name, obj)
@@ -32,12 +32,13 @@ class Context(object):
         return _dukpy.ctx_eval_string(self._ctx, jscode, kwargs)
 
 
-class RequirableContext(Context):
+class RequirableContextFinder(object):
     def __init__(self, search_paths, enable_python=False):
-        super(RequirableContext, self).__init__()
         self.search_paths = search_paths
-        self.evaljs("Duktape.modSearch = dukpy.modSearch;", modSearch=self.require)
         self.enable_python = enable_python
+
+    def contribute(self, req_ctx):
+        req_ctx.evaljs("Duktape.modSearch = dukpy.modSearch;", modSearch=self.require)
 
     def require(self, id_, require, exports, module):
         # does the module ID begin with 'python/'
@@ -65,30 +66,49 @@ class RequirableContext(Context):
         except ImportError:
             return None
 
-        # hack to work around the fact that
-        # JS objects in Python are copies, and don't reflect the state of the object
-        # "in JS land"
         all_things = getattr(pymod, '__all__', [x for x in dir(pymod) if x and x[0] != '_'])
-        self.evaljs("""
-Duktape._pymodules = Duktape._pymodules || {};
-Duktape._pymodulesins = Duktape._pymodulesins || {};
-
-Duktape._pylastmodule = dukpy.module_name;
-Duktape._pymodules[dukpy.module_name] = dukpy.module;
-Duktape._pymodulesins[dukpy.module_name] = dukpy.module_things;
-""", module_name=pyid, module=pymod, module_things=all_things)
-        return """
-var a = Duktape._pymodulesins[Duktape._pylastmodule];
-for (var i = 0; i < a.length; i++) {
-    var k = a[i];
-    exports[k] = Duktape._pymodules[Duktape._pylastmodule][k];
-}
-"""
+        for thing in all_things:
+            exports[thing] = getattr(pymod, thing)
+        return True
 
 
-class JSFunction(object):
-    def __init__(self, func_ptr):
-        self._func = func_ptr
+class RequirableContext(Context):
+    def __init__(self, search_paths, enable_python=False):
+        super(RequirableContext, self).__init__()
+        self.finder = RequirableContextFinder(search_paths, enable_python)
+        self.finder.contribute(self)
+
+
+class JSObject(object):
+    def __init__(self, ptr):
+        self._ptr = ptr
 
     def __call__(self, *args):
-        return _dukpy.dpf_exec(self._func, args)
+        try:
+            return _dukpy.dpf_exec(self._ptr, args)
+        except _dukpy.JSRuntimeError as e:
+            if str(e).startswith('TypeError: '):
+                raise TypeError(str(e)[len('TypeError: '):])
+            raise
+
+    def __getitem__(self, key):
+        return _dukpy.dpf_get_item(self._ptr, str(key))
+
+    def __setitem__(self, key, value):
+        return _dukpy.dpf_set_item(self._ptr, str(key), value)
+
+    def __getattr__(self, key):
+        if key == '_ptr':
+            return super(JSObject, self).__getattr__(key)
+        return self[key]
+
+    def __setattr__(self, key, value):
+        if key == '_ptr':
+            return super(JSObject, self).__setattr__(key, value)
+        self[key] = value
+
+    def __len__(self):
+        return self.length
+
+    def __str__(self):
+        return self.toString()

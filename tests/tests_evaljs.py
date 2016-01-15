@@ -9,7 +9,7 @@ class TestEvalJS(object):
         ans = dukpy.evaljs(["var o = {'value': 5}",
                             "o['value'] += 3",
                             "o"])
-        assert ans == {'value': 8}
+        assert ans['value'] == 8
 
     def test_coffee(self):
         ans = dukpy.coffee_compile('''
@@ -216,6 +216,16 @@ class TestPythonToJSObject(object):
         ret = call_first_argument_js(call_first_argument_python, sum, [1, 7, 10])
         assert ret == 18
 
+    def test_typeerror_on_object_call(self):
+        c = dukpy.Context()
+
+        ret = c.evaljs("({})")
+        try:
+            ret()
+            assert False
+        except TypeError:
+            pass
+
 
 class TestRequirableContext(object):
     test_js_dir = os.path.join(os.path.dirname(__file__), 'testjs')
@@ -241,7 +251,7 @@ class TestRequirableContext(object):
         sys.modules['testpy'] = testpy
         c = dukpy.RequirableContext([])
         try:
-            c.evaljs("require('python/testpy').call()") == "Hello from Python!"
+            c.evaljs("require('python/testpy').call()")
             assert False
         except ImportError:
             pass

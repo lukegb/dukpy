@@ -19,7 +19,7 @@
 #define DUKPY_CHAR_TO_NSTRING PyString_FromString
 #endif
 
-
+//#define DUKPY_DEBUG
 #ifdef DUKPY_DEBUG
 #define DUKPY_DEBUG_PRINT printf
 #define DUKPY_DEBUG_PRINT_REPR(thing) { do { PyObject* tptr = (thing); PyObject* repr = PyObject_Repr(tptr); printf("obj at %p: repr: %s\n", tptr, DUKPY_NSTRING_TO_CHAR(repr)); Py_DECREF(repr); } while (0); }
@@ -153,14 +153,14 @@ static void dukpy_destroy_pyctx(PyObject* pyctx) {
         return;
     }
 
-    DUKPY_DEBUG_PRINT("OK, destroying PyJSFunction...\n");
+    DUKPY_DEBUG_PRINT("OK, destroying pyJSObject...\n");
 
     duk_push_global_stash(ctx); // [... gstash]
-    duk_get_prop_string(ctx, -1, "pydukPyJSFunction"); // [... gstash ptr]
-    PyObject* pyJSFunction = duk_get_pointer(ctx, -1); // [... gstash ptr]
-    duk_del_prop_string(ctx, -2, "pydukPyJSFunction"); // [... gstash ptr]
+    duk_get_prop_string(ctx, -1, "pydukpyJSObject"); // [... gstash ptr]
+    PyObject* pyJSObject = duk_get_pointer(ctx, -1); // [... gstash ptr]
+    duk_del_prop_string(ctx, -2, "pydukpyJSObject"); // [... gstash ptr]
     duk_pop_2(ctx); // [...]
-    Py_XDECREF(pyJSFunction);
+    Py_XDECREF(pyJSObject);
 
     DUKPY_DEBUG_PRINT("OK, destroying heap!\n");
 
@@ -286,99 +286,54 @@ static PyObject* dukpy_pyobj_from_stack(duk_context *ctx, int pos, PyObject* see
 
         case DUK_TYPE_OBJECT:
         {
-            if (duk_is_function(ctx, pos)) {
-                // hoo boy
-                duk_dup(ctx, pos); // [... func]
-                duk_push_global_stash(ctx); // [... func gstash]
-                struct DukPyFunction* dpf = dukpy_generate_function(ctx);
-                duk_dup(ctx, -2); // [... func gstash func]
-
-                // we need to bind this function if it's not already bound
-                if (hasWrapper && !duk_is_bound_function(ctx, -1)) {
-                    // bind it!
-                    int newWrapperPos = wrapperPos;
-                    if (newWrapperPos < 0) {
-                        newWrapperPos -= 4;
-                    }
-                    duk_push_string(ctx, "bind"); // [... func gstash func "bind"]
-                    duk_dup(ctx, newWrapperPos); // [...func gstash func "bind" this]
-                    duk_call_prop(ctx, -3, 1); //[...func gstash func funcTHIS]
-                    duk_remove(ctx, -2); // [...func gstash funcTHIS]
-                }
-
-                duk_put_prop_string(ctx, -2, dpf->name); // [... func gstash]
-                duk_pop_2(ctx); // [...]
-
-                PyObject* capsule = PyCapsule_New((void*)dpf, DUKPY_FUNCTION_CAPSULE_NAME, dukpy_function_destructor);
-
-                // we have the capsule, now create the wrapper
-                duk_push_global_stash(ctx);
-                duk_get_prop_string(ctx, -1, "pydukPyJSFunction"); // [... gstash JSFunction]
-                PyObject* pyJSFunctionClazz = (PyObject*)duk_require_pointer(ctx, -1);
-                duk_pop(ctx); // [... gstash]
-                PyObject* pyJSFunctionArgList = Py_BuildValue("(O)", capsule);
-                PyObject* pyJSFunction = PyObject_CallObject(pyJSFunctionClazz, pyJSFunctionArgList);
-                Py_DECREF(pyJSFunctionArgList);
-                Py_DECREF(capsule);
-                duk_pop(ctx); // [...]
-
-                PyDict_SetItem(seen, kkey, pyJSFunction);
-                Py_DECREF(kkey);
-                return pyJSFunction;
-            } else if (duk_is_array(ctx, pos)) {
-                int len = duk_get_length(ctx, pos);
-                PyObject* val = PyList_New(len);
-                PyDict_SetItem(seen, kkey, val);
-
-                int myPosInside = pos;
-                if (pos < 0) {
-                    // account for the actual python object itself
-                    myPosInside -= 1;
-                }
-
-                for (int i = 0; i < len; i++) {
-                    duk_get_prop_index(ctx, pos, i);
-                    PyList_SET_ITEM(val, i, dukpy_pyobj_from_stack(ctx, -1, seen, 1, myPosInside));
-                    duk_pop(ctx);
-                }
-                Py_DECREF(kkey);
+            // check if it has a _ptr
+            duk_get_prop_string(ctx, pos, DUKPY_INTERNAL_PROPERTY "_ptr");
+            void* ptr = duk_get_pointer(ctx, -1);
+            duk_pop(ctx);
+            if (ptr != NULL) {
+                PyObject* val = ptr;
+                Py_INCREF(val);
                 return val;
-            } else if (duk_is_object(ctx, pos)) {
-                // check if it has a _ptr
-                duk_get_prop_string(ctx, pos, DUKPY_INTERNAL_PROPERTY "_ptr");
-                void* ptr = duk_get_pointer(ctx, -1);
-                duk_pop(ctx);
-                if (ptr != NULL) {
-                    PyObject* val = ptr;
-                    Py_INCREF(val);
-                    return val;
-                }
-
-                int myPosInside = pos;
-                if (pos < 0) {
-                    // account for the enumerator, key and values
-                    myPosInside -= 3;
-                }
-
-                PyObject* val = PyDict_New();
-                PyDict_SetItem(seen, kkey, val);
-                duk_enum(ctx, pos, DUK_ENUM_OWN_PROPERTIES_ONLY);
-                while (duk_next(ctx, -1, 1)) {
-                    PyObject* ikey = dukpy_pyobj_from_stack(ctx, -2, seen, 1, myPosInside);
-                    PyObject* ival = dukpy_pyobj_from_stack(ctx, -1, seen, 1, myPosInside);
-                    PyDict_SetItem(val, ikey, ival);
-                    Py_DECREF(ikey);
-                    Py_DECREF(ival);
-                    duk_pop_2(ctx);
-                }
-                duk_pop(ctx);
-                Py_DECREF(kkey);
-                return val;
-            } else {
-                // we should never end up here, but let's be safe
-                Py_DECREF(kkey);
-                return DUKPY_CHAR_TO_NSTRING(duk_safe_to_string(ctx, pos));
             }
+
+            // hoo boy
+            duk_dup(ctx, pos); // [... func]
+            duk_push_global_stash(ctx); // [... func gstash]
+            struct DukPyFunction* dpf = dukpy_generate_function(ctx);
+            duk_dup(ctx, -2); // [... func gstash func]
+
+            // we need to bind this function if it's not already bound
+            if (duk_is_function(ctx, -1) && hasWrapper && !duk_is_bound_function(ctx, -1)) {
+                // bind it!
+                int newWrapperPos = wrapperPos;
+                if (newWrapperPos < 0) {
+                    newWrapperPos -= 4;
+                }
+                duk_push_string(ctx, "bind"); // [... func gstash func "bind"]
+                duk_dup(ctx, newWrapperPos); // [...func gstash func "bind" this]
+                duk_call_prop(ctx, -3, 1); //[...func gstash func funcTHIS]
+                duk_remove(ctx, -2); // [...func gstash funcTHIS]
+            }
+
+            duk_put_prop_string(ctx, -2, dpf->name); // [... func gstash]
+            duk_pop_2(ctx); // [...]
+
+            PyObject* capsule = PyCapsule_New((void*)dpf, DUKPY_FUNCTION_CAPSULE_NAME, dukpy_function_destructor);
+
+            // we have the capsule, now create the wrapper
+            duk_push_global_stash(ctx);
+            duk_get_prop_string(ctx, -1, "pydukpyJSObject"); // [... gstash JSObject]
+            PyObject* pyJSObjectClazz = (PyObject*)duk_require_pointer(ctx, -1);
+            duk_pop(ctx); // [... gstash]
+            PyObject* pyJSObjectArgList = Py_BuildValue("(O)", capsule);
+            PyObject* pyJSObject = PyObject_CallObject(pyJSObjectClazz, pyJSObjectArgList);
+            Py_DECREF(pyJSObjectArgList);
+            Py_DECREF(capsule);
+            duk_pop(ctx); // [...]
+
+            PyDict_SetItem(seen, kkey, pyJSObject);
+            Py_DECREF(kkey);
+            return pyJSObject;
         }
 
         case DUK_TYPE_BUFFER:
@@ -406,6 +361,128 @@ static PyObject* dukpy_pyobj_from_stack(duk_context *ctx, int pos, PyObject* see
             return DUKPY_CHAR_TO_NSTRING(duk_safe_to_string(ctx, pos));                    
         }
     }
+}
+
+static duk_ret_t dukpy_err_finalizer(duk_context *ctx) {
+
+    DUKPY_DEBUG_PRINT("Finalizing error!\n");
+
+    duk_get_prop_string(ctx, 0, DUKPY_INTERNAL_PROPERTY "_ptrtype");
+    if (duk_is_pointer(ctx, -1)) {
+        PyObject* obj = duk_require_pointer(ctx, -1);
+        DUKPY_DEBUG_PRINT("...ptrtype\n");
+        DUKPY_DEBUG_PRINT_REPR(obj);
+        Py_DECREF(obj);
+    }
+    duk_pop(ctx);
+
+    duk_get_prop_string(ctx, 0, DUKPY_INTERNAL_PROPERTY "_ptrinst");
+    if (duk_is_pointer(ctx, -1)) {
+        PyObject* obj = duk_require_pointer(ctx, -1);
+        DUKPY_DEBUG_PRINT("...ptrinst\n");
+        DUKPY_DEBUG_PRINT_REPR(obj);
+        Py_DECREF(obj);
+    }
+    duk_pop(ctx);
+
+    duk_get_prop_string(ctx, 0, DUKPY_INTERNAL_PROPERTY "_ptrtb");
+    if (duk_is_pointer(ctx, -1)) {
+        PyObject* obj = duk_require_pointer(ctx, -1);
+        DUKPY_DEBUG_PRINT("...ptrtb\n");
+        DUKPY_DEBUG_PRINT_REPR(obj);
+        Py_DECREF(obj);
+    }
+    duk_pop(ctx);
+
+    DUKPY_DEBUG_PRINT("Finalizing error done.\n");
+}
+
+static duk_errcode_t dukpy_python_error_to_errcode(PyObject* exctype) {
+    return DUK_ERR_INTERNAL_ERROR;
+}
+
+static duk_ret_t dukpy_push_current_python_error(duk_context *ctx) {
+    PyObject *exctype = PyErr_Occurred();
+    if (!exctype) {
+        abort();
+    }
+
+    PyObject *excinst = NULL;
+    PyObject *exctb = NULL;
+    PyErr_Fetch(&exctype, &excinst, &exctb);
+    // we now own a reference to these
+    PyErr_NormalizeException(&exctype, &excinst, &exctb);
+
+
+    PyObject *excstr;
+    if (excinst) {
+        excstr = PyObject_Str(excinst);
+    } else {
+        excstr = PyObject_Str(exctype);
+    }
+
+    duk_errcode_t errc = dukpy_python_error_to_errcode(exctype);
+    duk_push_error_object(ctx, errc, "%s", DUKPY_NSTRING_TO_CHAR(excstr));
+    duk_push_c_function(ctx, dukpy_err_finalizer, 1); // [err finalizer]
+    duk_set_finalizer(ctx, -2); // [err]
+    if (exctype) {
+        duk_push_pointer(ctx, exctype);
+        duk_put_prop_string(ctx, -2, DUKPY_INTERNAL_PROPERTY "_ptrtype");
+    }
+    if (excinst) {
+        duk_push_pointer(ctx, excinst);
+        duk_put_prop_string(ctx, -2, DUKPY_INTERNAL_PROPERTY "_ptrinst");
+    }
+    if (exctb) {
+        duk_push_pointer(ctx, exctb);
+        duk_put_prop_string(ctx, -2, DUKPY_INTERNAL_PROPERTY "_ptrtb");
+    }
+    PyErr_Clear();
+
+    Py_DECREF(excstr);
+}
+
+static void dukpy_set_python_error_from_js_error(duk_context *ctx) {
+    if (PyErr_Occurred()) {
+        // don't override set error indicator!
+        // something else maybe happened during our error handling?
+        duk_pop(ctx);
+        return;
+    }
+
+    // OK, let's have a look at this
+    PyObject* exctype = NULL;
+    PyObject* excinst = NULL;
+    PyObject* exctb = NULL;
+
+    duk_get_prop_string(ctx, -1, DUKPY_INTERNAL_PROPERTY "_ptrtype");
+    if (duk_is_pointer(ctx, -1)) {
+        exctype = (PyObject*)duk_require_pointer(ctx, -1);
+    }
+    duk_pop(ctx);
+
+    duk_get_prop_string(ctx, -1, DUKPY_INTERNAL_PROPERTY "_ptrinst");
+    if (duk_is_pointer(ctx, -1)) {
+        excinst = (PyObject*)duk_require_pointer(ctx, -1);
+    }
+    duk_pop(ctx);
+
+    duk_get_prop_string(ctx, -1, DUKPY_INTERNAL_PROPERTY "_ptrtb");
+    if (duk_is_pointer(ctx, -1)) {
+        exctb = (PyObject*)duk_require_pointer(ctx, -1);
+    }
+    duk_pop(ctx);
+
+    if (exctype) {
+        Py_XINCREF(exctype);
+        Py_XINCREF(excinst);
+        Py_XINCREF(exctb);
+        // we're giving PyErr_Restore a reference
+        PyErr_Restore(exctype, excinst, exctb);
+    } else {
+        PyErr_SetString(DukPyError, duk_safe_to_string(ctx, -1));
+    }
+    duk_pop(ctx); // get rid of error
 }
 
 static duk_ret_t dukpy_callable_finalizer(duk_context *ctx) {
@@ -444,7 +521,9 @@ static duk_ret_t dukpy_callable_handler(duk_context *ctx) {
     PyObject* ret = PyObject_Call(fptr, argTuple, NULL);
     if (ret == NULL) {
         // something went wrong :(
-        return DUK_RET_INTERNAL_ERROR;
+        dukpy_push_current_python_error(ctx);
+        duk_throw(ctx);
+        return DUK_RET_INTERNAL_ERROR; // just in case?
     }
 
     if (dukpy_wrap_a_python_object_somehow_and_return_it(ctx, ret) == 0) {
@@ -523,7 +602,7 @@ static int dukpy_push_a_python_sequence_somehow_and_return_the_count(duk_context
         PyObject* pythis = PySequence_GetItem(pymyarglist, i);
         int pushedThisTime = dukpy_wrap_a_python_object_somehow_and_return_it(ctx, pythis);
         if (pushedThisTime != 1) {
-            PyErr_SetString(PyExc_ValueError, ":(");
+            dukpy_set_python_error_from_js_error(ctx);
             Py_DECREF(pymyarglist);
             Py_DECREF(pythis);
             return i;
@@ -911,9 +990,9 @@ static duk_ret_t dukpy_objwrap_ownKeys(duk_context *ctx) {
 
 
 static PyObject *DukPy_create_context(PyObject *self, PyObject *args) {
-    PyObject *pyJSFunction;
+    PyObject *pyJSObject;
 
-    if (!PyArg_ParseTuple(args, "O", &pyJSFunction))
+    if (!PyArg_ParseTuple(args, "O", &pyJSObject))
         return NULL;
 
     duk_context *ctx = duk_create_heap(
@@ -965,10 +1044,10 @@ static PyObject *DukPy_create_context(PyObject *self, PyObject *args) {
     duk_push_pointer(ctx, pyctx); // [gstash pyctx]
     duk_put_prop_string(ctx, -2, "pydukPyCTX"); // [gstash]
 
-    Py_INCREF(pyJSFunction);
-    duk_push_pointer(ctx, pyJSFunction); // [gstash pyJSFunction]
-    duk_put_prop_string(ctx, -2, "pydukPyJSFunction"); // [gstash]
-    DUKPY_DEBUG_PRINT("pyJSFunction is at %p\n", pyJSFunction);
+    Py_INCREF(pyJSObject);
+    duk_push_pointer(ctx, pyJSObject); // [gstash pyJSObject]
+    duk_put_prop_string(ctx, -2, "pydukpyJSObject"); // [gstash]
+    DUKPY_DEBUG_PRINT("pyJSObject is at %p\n", pyJSObject);
 
     duk_pop(ctx); // []
 
@@ -994,18 +1073,14 @@ static PyObject *DukPy_eval_string_ctx(PyObject *self, PyObject *args) {
     // set global 'dukpy' to be our input
     Py_INCREF(pyvars);
     if (dukpy_wrap_a_python_object_somehow_and_return_it(ctx, pyvars) != 1) {
-        if (!PyErr_Occurred()) {
-            PyErr_SetString(DukPyError, "something went wrong");
-        }
+        dukpy_set_python_error_from_js_error(ctx);
         return NULL;
     }
     duk_put_global_string(ctx, "dukpy");
 
     int res = duk_peval_string(ctx, command);
     if (res != 0) {
-        if (!PyErr_Occurred()) {
-            PyErr_SetString(DukPyError, duk_safe_to_string(ctx, -1));
-        }
+        dukpy_set_python_error_from_js_error(ctx);
         return NULL;
     }
 
@@ -1047,7 +1122,7 @@ static PyObject *DukPy_add_global_object_ctx(PyObject *self, PyObject *args) {
     Py_INCREF(object);
 
     if (dukpy_wrap_a_python_object_somehow_and_return_it(ctx, object) != 1) {
-        PyErr_SetString(PyExc_ValueError, ":(");
+        dukpy_set_python_error_from_js_error(ctx);
         return NULL;
     }
     duk_put_global_string(ctx, object_name); // []
@@ -1090,7 +1165,7 @@ static PyObject *DukPy_exec_dpf(PyObject *self, PyObject *args) {
 
     int result = duk_pcall(dpf->ctx, argCount); // [... gstash res <args>]
     if (result) {
-        PyErr_SetString(DukPyError, duk_safe_to_string(dpf->ctx, -1));
+        dukpy_set_python_error_from_js_error(dpf->ctx);
         return NULL;
     }
     PyObject* seen = PyDict_New();
@@ -1101,11 +1176,106 @@ static PyObject *DukPy_exec_dpf(PyObject *self, PyObject *args) {
     return ret;
 }
 
+static PyObject *DukPy_get_item_dpf(PyObject *self, PyObject *args) {
+    PyObject *pydpf;
+    PyObject *pykey;
+
+    if (!PyArg_ParseTuple(args, "OO", &pydpf, &pykey))
+        return NULL;
+
+    if (!pydpf) {
+        PyErr_SetString(PyExc_ValueError, "must provide a PyDukFunction");
+        return NULL;
+    }
+
+    if (!PyCapsule_CheckExact(pydpf)) {
+        PyErr_SetString(PyExc_ValueError, "must provide a PyDukFunction");
+        return NULL;
+    }
+
+    struct DukPyFunction* dpf = (struct DukPyFunction*)PyCapsule_GetPointer(pydpf, DUKPY_FUNCTION_CAPSULE_NAME);
+    if (!dpf) {
+        PyErr_SetString(PyExc_ValueError, "must provide a PyDukFunction");
+        return NULL;
+    }
+
+    if (!pykey || !DUKPY_IS_NSTRING(pykey)) {
+        PyErr_SetString(PyExc_ValueError, "must provide a key");
+        return NULL;
+    }
+
+    duk_push_global_stash(dpf->ctx); // [... gstash]
+    duk_get_prop_string(dpf->ctx, -1, dpf->name); // [... gstash func]
+    duk_get_prop_string(dpf->ctx, -1, DUKPY_NSTRING_TO_CHAR(pykey)); // [... gstash func prop]
+
+    PyObject* seen = PyDict_New();
+    PyObject* ret = dukpy_pyobj_from_stack(dpf->ctx, -1, seen, 0, 0);
+    Py_DECREF(seen);
+    duk_pop_3(dpf->ctx); // [...]
+
+    return ret;
+}
+
+static PyObject *DukPy_set_item_dpf(PyObject *self, PyObject *args) {
+    PyObject *pydpf;
+    PyObject *pykey;
+    PyObject *pyvalue;
+
+    if (!PyArg_ParseTuple(args, "OOO", &pydpf, &pykey, &pyvalue))
+        return NULL;
+
+    if (!pydpf) {
+        PyErr_SetString(PyExc_ValueError, "must provide a PyDukFunction");
+        return NULL;
+    }
+
+    if (!PyCapsule_CheckExact(pydpf)) {
+        PyErr_SetString(PyExc_ValueError, "must provide a PyDukFunction");
+        return NULL;
+    }
+
+    struct DukPyFunction* dpf = (struct DukPyFunction*)PyCapsule_GetPointer(pydpf, DUKPY_FUNCTION_CAPSULE_NAME);
+    if (!dpf) {
+        PyErr_SetString(PyExc_ValueError, "must provide a PyDukFunction");
+        return NULL;
+    }
+
+    if (!pykey || !DUKPY_IS_NSTRING(pykey)) {
+        PyErr_SetString(PyExc_ValueError, "must provide a key");
+        return NULL;
+    }
+
+    if (!pyvalue) {
+        PyErr_SetString(PyExc_ValueError, "must provide a value");
+        return NULL;
+    }
+
+    duk_push_global_stash(dpf->ctx); // [... gstash]
+    duk_get_prop_string(dpf->ctx, -1, dpf->name); // [... gstash func]
+
+    Py_INCREF(pyvalue);
+    int pushedThisTime = dukpy_wrap_a_python_object_somehow_and_return_it(dpf->ctx, pyvalue);
+    if (pushedThisTime != 1) {
+        Py_DECREF(pyvalue);
+        dukpy_set_python_error_from_js_error(dpf->ctx);
+        return NULL;
+    }
+
+    duk_put_prop_string(dpf->ctx, -2, DUKPY_NSTRING_TO_CHAR(pykey)); // [... gstash func]
+
+    duk_pop_2(dpf->ctx); // [...]
+
+    Py_RETURN_NONE;
+}
+
+
 static PyMethodDef DukPy_methods[] = {
     {"new_context", DukPy_create_context, METH_VARARGS, "Create a new DukPy context."},
     {"ctx_eval_string", DukPy_eval_string_ctx, METH_VARARGS, "Run Javascript code from a string in a given context."},
     {"ctx_add_global_object", DukPy_add_global_object_ctx, METH_VARARGS, "Add an object to the global context."},
     {"dpf_exec", DukPy_exec_dpf, METH_VARARGS, "Execute a DukPyFunction."},
+    {"dpf_get_item", DukPy_get_item_dpf, METH_VARARGS, "Get an attribute on a DukPyFunction."},
+    {"dpf_set_item", DukPy_set_item_dpf, METH_VARARGS, "Set an attribute on a DukPyFunction."},
     {NULL, NULL, 0, NULL}
 };
 
