@@ -43,7 +43,7 @@ class RequirableContextFinder(object):
         req_ctx.evaljs("Duktape.modSearch = dukpy.modSearch;", modSearch=req_ctx.wrap(self.require))
         req_ctx.evaljs("process = {}; process.env = dukpy.environ", environ=dict(os.environ))
 
-    def try_package_dir(self, folder_package):
+    def try_package_dir(self, folder_package, id_):
         # grab package.json
         packagejson_path = os.path.join(folder_package, 'package.json')
         if os.path.exists(packagejson_path):
@@ -52,49 +52,44 @@ class RequirableContextFinder(object):
 
             main_thing = packagejson.get('main')
             if main_thing:
-                return os.path.join(folder_package, main_thing)
+                return os.path.join(folder_package, main_thing), '{}/{}'.format(id_, main_thing)
 
         indexjs_path = os.path.join(folder_package, 'index.js')
         if os.path.exists(indexjs_path):
-            return indexjs_path
+            return indexjs_path, '{}/index'.format(id_)
 
     def try_dir(self, path, id_):
         if id_.endswith('.json') and os.path.exists(os.path.join(path, id_)):
-            return os.path.join(path, id_)
+            return os.path.join(path, id_), id_
 
         if os.path.exists(os.path.join(path, id_)):
             folder_package = os.path.join(path, id_)
-            return self.try_package_dir(folder_package)
+            return self.try_package_dir(folder_package, id_)
 
         if os.path.exists(os.path.join(path, id_ + '.js')):
-            return os.path.join(path, id_ + '.js')
+            return os.path.join(path, id_ + '.js'), id_
 
         if os.path.exists(os.path.join(path, id_)):
-            return os.path.join(path, id_)
+            return os.path.join(path, id_), id_
 
     def resolve(self, id_, search_paths):
         # we need to resolve id_ left-to-right
         search_paths = list(search_paths)
-        id_segments = id_.split('!')
         last_found_path = None
+        canonical_id = id_
 
-        for id_segment in id_segments:
-            next_search_paths = list(search_paths)
-            for search_path in search_paths:
-                ret = self.try_dir(search_path, id_segment)
-                if not ret:
-                    continue
-                last_found_path = ret
-                next_search_paths.insert(0, os.path.dirname(last_found_path))
-                next_search_paths.insert(1, os.path.join(os.path.dirname(last_found_path), 'node_modules'))
-                next_search_paths.insert(1, os.path.join(os.path.dirname(os.path.dirname(last_found_path)), 'node_modules'))
-                break
-            else:
-                raise ImportError("unable to find " + id_)
-            search_paths = next_search_paths
+        for search_path in search_paths:
+            r = self.try_dir(search_path, id_)
+            if not r:
+                continue
+            ret, canonical_id = r
+            last_found_path = ret
+            break
+        else:
+            raise ImportError("unable to find " + id_)
 
         with open(last_found_path, 'r') as f:
-            return f.read()
+            return f.read(), canonical_id
 
     def require(self, req_ctx, id_, require, exports, module):
         # does the module ID begin with 'python/'
@@ -104,51 +99,36 @@ class RequirableContextFinder(object):
             if ret:
                 return ret
 
-        ret = self.resolve(id_, self.search_paths)
-        if ret:
+        r = self.resolve(id_, self.search_paths)
+        if r:
+            ret, canonical_id = r
             if id_ and id_.endswith('.json'):
-                # hmm
                 return "module.exports = " + ret + ";"
 
-
             # do a slight cheat here
+            # basically we want to make sure that the names
+            # are resolved relative to the correct path, so we override
+            # require.id to our "canonicalized" name
+            #
+            # we also need to make sure that <blah>/ requires are accepted
+            req_ctx.define_global("_dukpy_last_module", canonical_id)
             ret = """
+Object.defineProperty(require, "id", { value: _dukpy_last_module });
 require = (function(_require) {
     return function(mToLoad) {
-        var shouldPrependModuleID = false;
-
-        var moduleSnippets = module.id.split('!');
-        var lastModuleSnippet = moduleSnippets[moduleSnippets.length-1];
-
-        if (lastModuleSnippet.indexOf('./') === 0) {
-            // it's relative
-            // in which case, we should only prepend if there's more than one /
-            shouldPrependModuleID = lastModuleSnippet.lastIndexOf('/') !== 1 || lastModuleSnippet.toLowerCase() === lastModuleSnippet;
-            //shouldPrependModuleID = true;
-        } else {
-            // it's absolute
-            shouldPrependModuleID = true;
-        }
-
-        var realModuleID = moduleSnippets.pop();
-
-        if (shouldPrependModuleID) {
-            mToLoad = module.id + '!' + mToLoad;
-        } else {
-            mToLoad = moduleSnippets.join('!') + '!' + mToLoad;
-        }
-
-        if (mToLoad.charAt(mToLoad.length-1) == '/') {
-            mToLoad += 'index';
+        if (mToLoad.charAt(mToLoad.length - 1) === '/') {
+            // don't allow ending on an empty term
+            mToLoad = mToLoad.slice(0, mToLoad.length - 1);
         }
 
         return _require(mToLoad);
     };
 })(require);
 
-//process = {'env': {'NODE_ENV': 'production'}};
 (function() {
-""" + ret + "})();"
+""" + ret + """
+})();
+"""
 
             return ret
 
