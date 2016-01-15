@@ -6,20 +6,21 @@ except ImportError:
 
 HERE = os.path.abspath(os.path.dirname(__file__))
 try:
-    README = open(os.path.join(HERE, 'README.rst')).read()
+    with open(os.path.join(HERE, 'README.rst')) as f:
+        README = f.read()
 except IOError:
     README = ''
 
 duktape = Extension('dukpy._dukpy',
                     define_macros=[('DUK_OPT_DEEP_C_STACK', '1')],
-                    extra_compile_args = ['-std=c99'],
+                    extra_compile_args = ['-std=c99', '-Os', '-fomit-frame-pointer', '-fstrict-aliasing'],
                     sources=[os.path.join('duktape', 'duktape.c'), 
                              'pyduktape.c'],
                     include_dirs=[os.path.join('.', 'duktape')])
 
 setup(
     name='dukpy-lukegb',
-    version='0.1.0',
+    version='0.2.0',
     description='Simple JavaScript interpreter for Python',
     long_description=README,
     keywords='javascript compiler babeljs coffeescript',
@@ -39,7 +40,6 @@ setup(
         'Programming Language :: Python :: 3.4',
         'Programming Language :: Python :: 3.3',
         'Programming Language :: Python :: 2.7',
-        'Programming Language :: Python :: 2.6',
         'Programming Language :: JavaScript',
     ]
 )
