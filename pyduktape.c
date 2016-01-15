@@ -1088,7 +1088,11 @@ static PyObject *DukPy_exec_dpf(PyObject *self, PyObject *args) {
 
     int argCount = dukpy_push_a_python_sequence_somehow_and_return_the_count(dpf->ctx, pyarglist);
 
-    duk_pcall(dpf->ctx, argCount); // [... gstash res <args>]
+    int result = duk_pcall(dpf->ctx, argCount); // [... gstash res <args>]
+    if (result) {
+        PyErr_SetString(DukPyError, duk_safe_to_string(dpf->ctx, -1));
+        return NULL;
+    }
     PyObject* seen = PyDict_New();
     PyObject* ret = dukpy_pyobj_from_stack(dpf->ctx, -1, seen, 0, 0);
     Py_DECREF(seen);
