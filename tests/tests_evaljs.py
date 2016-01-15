@@ -1,4 +1,5 @@
 import json
+import os.path
 import dukpy
 from diffreport import report_diff
 
@@ -214,6 +215,23 @@ class TestPythonToJSObject(object):
 
         ret = call_first_argument_js(call_first_argument_python, sum, [1, 7, 10])
         assert ret == 18
+
+
+class TestRequirableContext(object):
+    test_js_dir = os.path.join(os.path.dirname(__file__), 'testjs')
+
+    def test_js_require(self):
+        c = dukpy.RequirableContext([self.test_js_dir])
+        assert c.evaljs("require('testjs').call()") == "Hello from JS!"
+
+    def test_python_require(self):
+        import sys, imp
+        testpy = imp.new_module('testpy')
+        testpy.call = lambda: 'Hello from Python!'
+        testpy.__all__ = ['call']
+        sys.modules['testpy'] = testpy
+        c = dukpy.RequirableContext([], enable_python=True)
+        assert c.evaljs("require('python/testpy').call()") == "Hello from Python!"
 
 
 class TestRegressions(object):
