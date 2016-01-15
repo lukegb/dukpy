@@ -41,55 +41,77 @@ class RequirableContextFinder(object):
     def contribute(self, req_ctx):
         import os
         req_ctx.evaljs("Duktape.modSearch = dukpy.modSearch;", modSearch=req_ctx.wrap(self.require))
+        req_ctx.evaljs("Duktape.resolverBase = null;")
         req_ctx.evaljs("process = {}; process.env = dukpy.environ", environ=dict(os.environ))
 
-    def try_package_dir(self, folder_package, id_):
-        # grab package.json
-        packagejson_path = os.path.join(folder_package, 'package.json')
-        if os.path.exists(packagejson_path):
-            with open(packagejson_path) as f:
-                packagejson = json.load(f)
+    def load_node_modules(self, search_id, search_path, recurse_downwards):
+        if recurse_downwards:
+            node_modules_dirs = []
 
-            main_thing = packagejson.get('main')
-            if main_thing:
-                return os.path.join(folder_package, main_thing), '{}/{}'.format(id_, main_thing)
+            search_path_pieces = search_path.split('/')
+            for n in range(len(search_path_pieces)-1, -1, -1):
+                if search_path_pieces[n] == 'node_modules':
+                    continue  # we'll end up generating this anyway
+                node_modules_dirs.append(os.path.join('/'.join(search_path_pieces[:n]), 'node_modules'))
+        else:
+            node_modules_dirs = [search_path]
 
-        indexjs_path = os.path.join(folder_package, 'index.js')
-        if os.path.exists(indexjs_path):
-            return indexjs_path, '{}/index'.format(id_)
+        for node_modules_dir in node_modules_dirs:
+            ret = self.load_as_file_or_directory(os.path.join(node_modules_dir, search_id))
+            if ret:
+                return ret
 
-    def try_dir(self, path, id_):
-        if id_.endswith('.json') and os.path.exists(os.path.join(path, id_)):
-            return os.path.join(path, id_), id_
+    def load_as_file_or_directory(self, path):
+        try_files = [path, path + '.js', path + '.json']
+        for try_file in try_files:
+            if os.path.exists(try_file) and os.path.isfile(try_file):
+                return try_file
 
-        if os.path.exists(os.path.join(path, id_)):
-            folder_package = os.path.join(path, id_)
-            return self.try_package_dir(folder_package, id_)
+        packagejson = os.path.join(path, 'package.json')
+        if os.path.exists(packagejson):
+            try:
+                with open(packagejson) as f:
+                    package = json.load(f)
+                if 'main' in package:
+                    ret = self.load_as_file_or_directory(os.path.join(path, package['main']))
+                    if ret:
+                        return ret
+            except IOError:
+                pass
 
-        if os.path.exists(os.path.join(path, id_ + '.js')):
-            return os.path.join(path, id_ + '.js'), id_
+        nextsteps = ['index.js', 'index.json']
+        for nextstep in nextsteps:
+            nextstep = os.path.join(path, nextstep)
+            if os.path.exists(nextstep):
+                return nextstep
 
-        if os.path.exists(os.path.join(path, id_)):
-            return os.path.join(path, id_), id_
 
-    def resolve(self, id_, search_paths):
+    def resolve(self, req_ctx, id_, search_paths):
         # we need to resolve id_ left-to-right
         search_paths = list(search_paths)
-        last_found_path = None
-        canonical_id = id_
-
-        for search_path in search_paths:
-            r = self.try_dir(search_path, id_)
-            if not r:
-                continue
-            ret, canonical_id = r
-            last_found_path = ret
-            break
+        if id_[0] == '!':
+            start_path = str(req_ctx.evaljs("Duktape.resolverBase"))
+            search_id = id_[1:]
         else:
+            start_path = None
+            search_id = id_
+        found_path = None
+
+        if not found_path and start_path:
+            found_path = self.load_as_file_or_directory(os.path.join(start_path, search_id))
+
+        if not found_path and start_path:
+            found_path = self.load_node_modules(search_id, start_path, True)
+
+        if not found_path:
+            for search_path in search_paths:
+                found_path = self.load_node_modules(search_id, search_path, False)
+
+        if not found_path:
             raise ImportError("unable to find " + id_)
 
-        with open(last_found_path, 'r') as f:
-            return f.read(), canonical_id
+        with open(found_path, 'r') as f:
+            return f.read(), os.path.dirname(found_path)
 
     def require(self, req_ctx, id_, require, exports, module):
         # does the module ID begin with 'python/'
@@ -99,10 +121,10 @@ class RequirableContextFinder(object):
             if ret:
                 return ret
 
-        r = self.resolve(id_, self.search_paths)
+        r = self.resolve(req_ctx, id_, self.search_paths)
         if r:
-            ret, canonical_id = r
-            if id_ and id_.endswith('.json'):
+            ret, located_path = r
+            if id_ and located_path.endswith('.json'):
                 return "module.exports = " + ret + ";"
 
             # do a slight cheat here
@@ -111,19 +133,15 @@ class RequirableContextFinder(object):
             # require.id to our "canonicalized" name
             #
             # we also need to make sure that <blah>/ requires are accepted
-            req_ctx.define_global("_dukpy_last_module", canonical_id)
+            req_ctx.define_global("_dukpy_last_module", located_path)
             ret = """
-Object.defineProperty(require, "id", { value: _dukpy_last_module });
-require = (function(_require) {
+require = (function(_require, locatedPath) {
     return function(mToLoad) {
-        if (mToLoad.charAt(mToLoad.length - 1) === '/') {
-            // don't allow ending on an empty term
-            mToLoad = mToLoad.slice(0, mToLoad.length - 1);
-        }
-
-        return _require(mToLoad);
+        Duktape.resolverBase = locatedPath;
+        return _require('!' + mToLoad);
     };
-})(require);
+})(require, _dukpy_last_module);
+delete _dukpy_last_module;
 
 (function() {
 """ + ret + """
