@@ -37,7 +37,7 @@ class RequirableContext(Context):
         super(RequirableContext, self).__init__()
         self.search_paths = search_paths
         self.evaljs("Duktape.modSearch = dukpy.modSearch;", modSearch=self.require)
-        self.enable_python = True
+        self.enable_python = enable_python
 
     def require(self, id_, require, exports, module):
         # does the module ID begin with 'python/'
@@ -57,7 +57,7 @@ class RequirableContext(Context):
                 # assume this was probably No such file
                 continue
 
-        raise Exception("Unable to load {}".format(id_))
+        raise ImportError("Unable to load {}".format(id_))
 
     def require_python(self, pyid, require, exports, module):
         try:

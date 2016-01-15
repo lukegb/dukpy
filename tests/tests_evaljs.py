@@ -233,6 +233,19 @@ class TestRequirableContext(object):
         c = dukpy.RequirableContext([], enable_python=True)
         assert c.evaljs("require('python/testpy').call()") == "Hello from Python!"
 
+    def test_python_require_doesnt_work_by_default(self):
+        import sys, imp
+        testpy = imp.new_module('testpy')
+        testpy.call = lambda: 'Hello from Python!'
+        testpy.__all__ = ['call']
+        sys.modules['testpy'] = testpy
+        c = dukpy.RequirableContext([])
+        try:
+            c.evaljs("require('python/testpy').call()") == "Hello from Python!"
+            assert False
+        except ImportError:
+            pass
+
 
 class TestRegressions(object):
     def test_pyargs_segfault(self):
