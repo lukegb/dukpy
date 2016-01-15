@@ -393,6 +393,8 @@ static duk_ret_t dukpy_err_finalizer(duk_context *ctx) {
     duk_pop(ctx);
 
     DUKPY_DEBUG_PRINT("Finalizing error done.\n");
+
+    return 0;
 }
 
 static duk_errcode_t dukpy_python_error_to_errcode(PyObject* exctype) {
@@ -438,6 +440,8 @@ static duk_ret_t dukpy_push_current_python_error(duk_context *ctx) {
     PyErr_Clear();
 
     Py_DECREF(excstr);
+
+    return 0;
 }
 
 static void dukpy_set_python_error_from_js_error(duk_context *ctx) {
@@ -562,6 +566,7 @@ static void dukpy_create_objwrap(duk_context *ctx) {
     duk_remove(ctx, -2); // [proxy]
 }
 
+#if 0
 static duk_bool_t dukpy_jswrapped_check(duk_context *ctx, PyObject* obj) {
     duk_push_global_stash(ctx); // [...gstash]
     duk_get_prop_string(ctx, -1, "pydukpyJSObject"); // [...gstash pyJSObject]
@@ -574,6 +579,7 @@ static duk_bool_t dukpy_jswrapped_check(duk_context *ctx, PyObject* obj) {
     // check isinstance pyJSObject
     return PyObject_IsInstance(obj, pyJSObject) == 1;
 }
+#endif // this is presently unused, since we just try to do the unwrap and continue if it fails
 
 static int dukpy_jswrapped_unwrap(duk_context *ctx, PyObject* obj) {
     duk_push_global_stash(ctx); // [...gstash]
@@ -662,7 +668,7 @@ static int dukpy_push_a_python_sequence_somehow_and_return_the_count(duk_context
             return i;
         }
         i += pushedThisTime;
-        Py_DECREF(pythis);
+        // we don't DECREF here because the reference is now owned by the JS engine
     }
 
     Py_DECREF(pymyarglist);

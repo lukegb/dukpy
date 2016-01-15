@@ -46,19 +46,31 @@ class RequirableContextFinder(object):
     def try_package_dir(self, folder_package):
         # grab package.json
         packagejson_path = os.path.join(folder_package, 'package.json')
-        with open(packagejson_path) as f:
-            packagejson = json.load(f)
+        if os.path.exists(packagejson_path):
+            with open(packagejson_path) as f:
+                packagejson = json.load(f)
 
-        main_thing = packagejson.get('main')
-        return os.path.join(folder_package, main_thing)
+            main_thing = packagejson.get('main')
+            if main_thing:
+                return os.path.join(folder_package, main_thing)
+
+        indexjs_path = os.path.join(folder_package, 'index.js')
+        if os.path.exists(indexjs_path):
+            return indexjs_path
 
     def try_dir(self, path, id_):
+        if id_.endswith('.json') and os.path.exists(os.path.join(path, id_)):
+            return os.path.join(path, id_)
+
         if os.path.exists(os.path.join(path, id_)):
             folder_package = os.path.join(path, id_)
             return self.try_package_dir(folder_package)
 
         if os.path.exists(os.path.join(path, id_ + '.js')):
             return os.path.join(path, id_ + '.js')
+
+        if os.path.exists(os.path.join(path, id_)):
+            return os.path.join(path, id_)
 
     def resolve(self, id_, search_paths):
         # we need to resolve id_ left-to-right
@@ -94,6 +106,11 @@ class RequirableContextFinder(object):
 
         ret = self.resolve(id_, self.search_paths)
         if ret:
+            if id_ and id_.endswith('.json'):
+                # hmm
+                return "module.exports = " + ret + ";"
+
+
             # do a slight cheat here
             ret = """
 require = (function(_require) {
@@ -106,7 +123,8 @@ require = (function(_require) {
         if (lastModuleSnippet.indexOf('./') === 0) {
             // it's relative
             // in which case, we should only prepend if there's more than one /
-            shouldPrependModuleID = lastModuleSnippet.lastIndexOf('/') !== 1;
+            shouldPrependModuleID = lastModuleSnippet.lastIndexOf('/') !== 1 || lastModuleSnippet.toLowerCase() === lastModuleSnippet;
+            //shouldPrependModuleID = true;
         } else {
             // it's absolute
             shouldPrependModuleID = true;
@@ -118,6 +136,10 @@ require = (function(_require) {
             mToLoad = module.id + '!' + mToLoad;
         } else {
             mToLoad = moduleSnippets.join('!') + '!' + mToLoad;
+        }
+
+        if (mToLoad.charAt(mToLoad.length-1) == '/') {
+            mToLoad += 'index';
         }
 
         return _require(mToLoad);

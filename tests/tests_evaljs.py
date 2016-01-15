@@ -212,7 +212,6 @@ class TestPythonToJSObject(object):
         def call_first_argument_python(a, *args):
             return a(*args)
 
-        c.define_global("call_first_argument_python", call_first_argument_python)
         call_first_argument_js = c.evaljs("(function(a) { return a.apply(undefined, arguments); })")
 
         ret = call_first_argument_js(call_first_argument_python, sum, [1, 7, 10])
