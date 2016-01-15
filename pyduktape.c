@@ -1138,7 +1138,7 @@ PyInit__dukpy(void)
 #else
 
 PyMODINIT_FUNC 
-init_dukpy()
+init_dukpy(void)
 {
     PyObject *module = Py_InitModule3("_dukpy", DukPy_methods, DukPy_doc);
     if (module == NULL)
