@@ -10,19 +10,19 @@
 #if PY_MAJOR_VERSION >= 3
 #define CONDITIONAL_PY3(three, two) (three)
 #define DUKPY_IS_NSTRING PyUnicode_Check
-#define DUKPY_NSTRING_TO_CHAR PyUnicode_AsUTF8
-#define DUKPY_CHAR_TO_NSTRING PyUnicode_FromString
+#define DUKPY_REAL_NSTRING_TO_CHAR PyUnicode_AsUTF8
+#define DUKPY_REAL_CHAR_TO_NSTRING PyUnicode_FromString
 #else
 #define CONDITIONAL_PY3(three, two) (two)
 #define DUKPY_IS_NSTRING PyString_Check
-#define DUKPY_NSTRING_TO_CHAR PyString_AsString
-#define DUKPY_CHAR_TO_NSTRING PyString_FromString
+#define DUKPY_REAL_NSTRING_TO_CHAR PyString_AsString
+#define DUKPY_REAL_CHAR_TO_NSTRING PyString_FromString
 #endif
 
 //#define DUKPY_DEBUG
 #ifdef DUKPY_DEBUG
 #define DUKPY_DEBUG_PRINT printf
-#define DUKPY_DEBUG_PRINT_REPR(thing) { do { PyObject* tptr = (thing); PyObject* repr = PyObject_Repr(tptr); printf("obj at %p: repr: %s\n", tptr, DUKPY_NSTRING_TO_CHAR(repr)); Py_DECREF(repr); } while (0); }
+#define DUKPY_DEBUG_PRINT_REPR(thing) { do { PyObject* tptr = (thing); PyObject* repr = PyObject_Repr(tptr); printf("obj at %p: repr: %s\n", tptr, dukpy_nstring_to_char(repr)); Py_DECREF(repr); } while (0); }
 #else
 #define DUKPY_DEBUG_PRINT(x, v...) // 
 #define DUKPY_DEBUG_PRINT_REPR(thing) // 
@@ -47,6 +47,134 @@ struct DukPyFunction {
 };
 
 static int dukpy_wrap_a_python_object_somehow_and_return_it(duk_context *ctx, PyObject* obj);
+
+static const char* dukpy_encode_cesu8(const char* inp) {
+    size_t inplen = strlen(inp);
+
+    // worst case scenario is the output will be 3/2 as long as the UTF-8 output, so:
+    size_t outplen = (inplen * 3) / 2;
+    char* out = calloc(sizeof(char), outplen+1);
+    if (!out) {
+        return NULL;
+    }
+
+    const char* walkin = inp;
+    char* walkout = out;
+
+    while (*(walkin+3)) {
+        if (!(
+            (walkin[0] & 0xf0) == 0xf0 &&
+            (walkin[1] & 0x80) == 0x80 &&
+            (walkin[2] & 0x80) == 0x80 &&
+            (walkin[3] & 0x80) == 0x80
+        )) {
+            *walkout = *walkin;
+            walkout++;
+            walkin++;
+            continue;
+        }
+
+        uint32_t codepoint = (
+            ((walkin[0] & 0x0f) << 18) |
+            ((walkin[1] & 0x3f) << 12) |
+            ((walkin[2] & 0x3f) << 6) |
+             (walkin[3] & 0x3f)
+        );
+
+        walkout[0] = walkout[3] = 0xed;
+        walkout[1] = 0xa0 | (((codepoint & 0xf8000) >> 15) - 1);
+        walkout[2] = 0x80 |  ((codepoint &  0xfc00) >> 10);
+        walkout[4] = 0xb0 |  ((codepoint &   0x3c0) >> 6);
+        walkout[5] = 0x80 |   (codepoint &    0x3f);
+
+        walkin += 4;
+        walkout += 6;
+    }
+
+    while (*walkin) {
+        *(walkout++) = *(walkin++);
+    }
+
+    out = realloc(out, walkout-out);
+
+    return out;
+}
+
+static const char* dukpy_decode_cesu8(const char* inp) {
+    size_t inplen = strlen(inp);
+
+    char* out = calloc(sizeof(char), inplen+1);
+    if (!out) {
+        return NULL;
+    }
+
+    const char* walkin = inp;
+    char* walkout = out;
+
+    // walk the string, looking for CESU8 characters
+    while (*(walkin+5)) {
+        if (!(
+            (walkin[0] & 0xff) == 0xed &&
+            (walkin[1] & 0xf0) == 0xa0 &&
+            (walkin[2] & 0xc0) == 0x80 &&
+            (walkin[3] & 0xff) == 0xed &&
+            (walkin[4] & 0xf0) == 0xb0 &&
+            (walkin[5] & 0xc0) == 0x80
+        )) {
+            // not a CESU-8 character
+            *walkout = *walkin;
+            walkout++;
+            walkin++;
+            continue;
+        }
+
+        // sigh.
+        uint32_t codepoint = (
+            ((walkin[1] & 0x0f) << 16) +
+            ((walkin[2] & 0x3f) << 10) +
+            ((walkin[4] & 0x0f) << 6) +
+             (walkin[5] & 0x3f) +
+             0x10000
+        );
+
+        walkout[0] = 0xf0 | ((codepoint & 0x1c0000) >> 18);
+        walkout[1] = 0x80 | ((codepoint &  0x3f000) >> 12);
+        walkout[2] = 0x80 | ((codepoint &    0xfc0) >>  6);
+        walkout[3] = 0x80 |  (codepoint &     0x3f);
+
+        walkin += 6;
+        walkout += 4;
+    }
+
+    while (*walkin) {
+        *walkout = *walkin;
+        walkin++;
+        walkout++;
+    }
+
+    out = realloc(out, walkout - out);
+    
+    return out;
+}
+
+static PyObject* dukpy_char_to_nstring(const char* charstr_cesu8) {
+    // the input is CESU-8, so we have to encode to "actual" UTF-8
+    const char* charstr_utf8 = dukpy_decode_cesu8(charstr_cesu8);
+    if (!charstr_utf8) {
+        return NULL;
+    }
+
+    return DUKPY_REAL_CHAR_TO_NSTRING(charstr_utf8);
+}
+
+static const char* dukpy_nstring_to_char(PyObject* pystr) {
+    const char* charstr_utf8 = DUKPY_REAL_NSTRING_TO_CHAR(pystr);
+    if (!charstr_utf8) {
+        return NULL;
+    }
+
+    return dukpy_encode_cesu8(charstr_utf8);
+}
 
 static const char* dukpy_generate_random_name(duk_context* ctx, duk_size_t len) {
     len = (len < 7) ? 32 : len;
@@ -281,7 +409,7 @@ static PyObject* dukpy_pyobj_from_stack(duk_context *ctx, int pos, PyObject* see
         {
             Py_DECREF(kkey);
             const char* val = duk_get_string(ctx, pos);
-            return DUKPY_CHAR_TO_NSTRING(val);
+            return dukpy_char_to_nstring(val);
         }
 
         case DUK_TYPE_OBJECT:
@@ -356,7 +484,7 @@ static PyObject* dukpy_pyobj_from_stack(duk_context *ctx, int pos, PyObject* see
         {
             Py_DECREF(kkey);
             // ???
-            return DUKPY_CHAR_TO_NSTRING(duk_safe_to_string(ctx, pos));                    
+            return dukpy_char_to_nstring(duk_safe_to_string(ctx, pos));                    
         }
     }
 }
@@ -422,7 +550,13 @@ static duk_ret_t dukpy_push_current_python_error(duk_context *ctx) {
     }
 
     duk_errcode_t errc = dukpy_python_error_to_errcode(exctype);
-    duk_push_error_object(ctx, errc, "%s", DUKPY_NSTRING_TO_CHAR(excstr));
+    const char* exccesu8 = dukpy_nstring_to_char(excstr);
+    if (exccesu8) {
+        duk_push_error_object(ctx, errc, "%s", exccesu8);
+        free((void*)exccesu8);
+    } else {
+        duk_push_error_object(ctx, errc, "error occurred translating Python error");
+    }
     duk_push_c_function(ctx, dukpy_err_finalizer, 1); // [err finalizer]
     duk_set_finalizer(ctx, -2); // [err]
     if (exctype) {
@@ -624,8 +758,13 @@ static int dukpy_jswrapped_unwrap(duk_context *ctx, PyObject* obj) {
 
 static int dukpy_wrap_a_python_object_somehow_and_return_it(duk_context *ctx, PyObject* obj) {
     if (DUKPY_IS_NSTRING(obj)) {
-        char* val = DUKPY_NSTRING_TO_CHAR(obj);
+        const char* val = dukpy_nstring_to_char(obj);
+        if (!val) {
+            return 0;
+        }
+
         duk_push_string(ctx, val);
+        free((void*)val);
     } else if (obj == Py_None) {
         duk_push_null(ctx);
     } else if (PyBool_Check(obj)) {
@@ -699,8 +838,9 @@ static duk_ret_t dukpy_objwrap_toString(duk_context *ctx) {
         return 0;
     }
 
-    char* vstrutf8 = DUKPY_NSTRING_TO_CHAR(vstr);
-    duk_push_string(ctx, vstrutf8);
+    const char* vstrcesu8 = dukpy_nstring_to_char(vstr);
+    duk_push_string(ctx, vstrcesu8);
+    free((void*)vstrcesu8);
     return 1;
 }
 static duk_ret_t dukpy_objwrap_get(duk_context *ctx) {
@@ -1019,13 +1159,19 @@ static duk_ret_t dukpy_objwrap_enumerate_core(duk_context *ctx, int allowDir) {
                     duk_push_undefined(ctx);
                 }
             } else if (DUKPY_IS_NSTRING(item)) {
-                char* val = DUKPY_NSTRING_TO_CHAR(item);
-                if (maskDunder && val[0] == '_' && val[1] == '_') {
-                    Py_DECREF(item);
-                    continue;
-                }
-                if (!PyErr_Occurred()) {
-                    duk_push_string(ctx, val);
+                const char* val = dukpy_nstring_to_char(item);
+                if (val) {
+                    if (maskDunder && val[0] == '_' && val[1] == '_') {
+                        Py_DECREF(item);
+                        free((void*)val);
+                        continue;
+                    }
+                    if (!PyErr_Occurred()) {
+                        duk_push_string(ctx, val);
+                    } else {
+                        duk_push_undefined(ctx);
+                    }
+                    free((void*)val);
                 } else {
                     duk_push_undefined(ctx);
                 }
@@ -1265,9 +1411,16 @@ static PyObject *DukPy_get_item_dpf(PyObject *self, PyObject *args) {
         return NULL;
     }
 
+    const char* keycesu8 = dukpy_nstring_to_char(pykey);
+    if (!keycesu8) {
+        PyErr_SetString(PyExc_RuntimeError, "unable to convert string to CESU8");
+        return NULL;
+    }
+
     duk_push_global_stash(dpf->ctx); // [... gstash]
     duk_get_prop_string(dpf->ctx, -1, dpf->name); // [... gstash func]
-    duk_get_prop_string(dpf->ctx, -1, DUKPY_NSTRING_TO_CHAR(pykey)); // [... gstash func prop]
+    duk_get_prop_string(dpf->ctx, -1, keycesu8); // [... gstash func prop]
+    free((void*)keycesu8);
 
     PyObject* seen = PyDict_New();
     PyObject* ret = dukpy_pyobj_from_stack(dpf->ctx, -1, seen, 1, -2);
@@ -1306,6 +1459,12 @@ static PyObject *DukPy_set_item_dpf(PyObject *self, PyObject *args) {
         return NULL;
     }
 
+    const char* keycesu8 = dukpy_nstring_to_char(pykey);
+    if (!keycesu8) {
+        PyErr_SetString(PyExc_RuntimeError, "unable to convert string to CESU8");
+        return NULL;
+    }
+
     if (!pyvalue) {
         PyErr_SetString(PyExc_ValueError, "must provide a value");
         return NULL;
@@ -1322,7 +1481,8 @@ static PyObject *DukPy_set_item_dpf(PyObject *self, PyObject *args) {
         return NULL;
     }
 
-    duk_put_prop_string(dpf->ctx, -2, DUKPY_NSTRING_TO_CHAR(pykey)); // [... gstash func]
+    duk_put_prop_string(dpf->ctx, -2, keycesu8); // [... gstash func]
+    free((void*)keycesu8);
 
     duk_pop_2(dpf->ctx); // [...]
 
