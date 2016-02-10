@@ -159,12 +159,12 @@ static const char* dukpy_decode_cesu8(const char* inp) {
 
 static PyObject* dukpy_char_to_nstring(const char* charstr_cesu8) {
     // the input is CESU-8, so we have to encode to "actual" UTF-8
-    const char* charstr_utf8 = dukpy_decode_cesu8(charstr_cesu8);
-    if (!charstr_utf8) {
-        return NULL;
-    }
+    // const char* charstr_utf8 = dukpy_decode_cesu8(charstr_cesu8);
+    // if (!charstr_utf8) {
+    //     return NULL;
+    // }
 
-    return DUKPY_REAL_CHAR_TO_NSTRING(charstr_utf8);
+    return DUKPY_REAL_CHAR_TO_NSTRING(charstr_cesu8);
 }
 
 static const char* dukpy_nstring_to_char(PyObject* pystr) {
@@ -173,7 +173,8 @@ static const char* dukpy_nstring_to_char(PyObject* pystr) {
         return NULL;
     }
 
-    return dukpy_encode_cesu8(charstr_utf8);
+    //return dukpy_encode_cesu8(charstr_utf8);
+    return charstr_utf8;
 }
 
 static const char* dukpy_generate_random_name(duk_context* ctx, duk_size_t len) {
@@ -553,7 +554,6 @@ static duk_ret_t dukpy_push_current_python_error(duk_context *ctx) {
     const char* exccesu8 = dukpy_nstring_to_char(excstr);
     if (exccesu8) {
         duk_push_error_object(ctx, errc, "%s", exccesu8);
-        free((void*)exccesu8);
     } else {
         duk_push_error_object(ctx, errc, "error occurred translating Python error");
     }
@@ -764,7 +764,6 @@ static int dukpy_wrap_a_python_object_somehow_and_return_it(duk_context *ctx, Py
         }
 
         duk_push_string(ctx, val);
-        free((void*)val);
     } else if (obj == Py_None) {
         duk_push_null(ctx);
     } else if (PyBool_Check(obj)) {
@@ -840,7 +839,6 @@ static duk_ret_t dukpy_objwrap_toString(duk_context *ctx) {
 
     const char* vstrcesu8 = dukpy_nstring_to_char(vstr);
     duk_push_string(ctx, vstrcesu8);
-    free((void*)vstrcesu8);
     return 1;
 }
 static duk_ret_t dukpy_objwrap_get(duk_context *ctx) {
@@ -1171,7 +1169,6 @@ static duk_ret_t dukpy_objwrap_enumerate_core(duk_context *ctx, int allowDir) {
                     } else {
                         duk_push_undefined(ctx);
                     }
-                    free((void*)val);
                 } else {
                     duk_push_undefined(ctx);
                 }
@@ -1420,7 +1417,6 @@ static PyObject *DukPy_get_item_dpf(PyObject *self, PyObject *args) {
     duk_push_global_stash(dpf->ctx); // [... gstash]
     duk_get_prop_string(dpf->ctx, -1, dpf->name); // [... gstash func]
     duk_get_prop_string(dpf->ctx, -1, keycesu8); // [... gstash func prop]
-    free((void*)keycesu8);
 
     PyObject* seen = PyDict_New();
     PyObject* ret = dukpy_pyobj_from_stack(dpf->ctx, -1, seen, 1, -2);
@@ -1482,7 +1478,6 @@ static PyObject *DukPy_set_item_dpf(PyObject *self, PyObject *args) {
     }
 
     duk_put_prop_string(dpf->ctx, -2, keycesu8); // [... gstash func]
-    free((void*)keycesu8);
 
     duk_pop_2(dpf->ctx); // [...]
 
